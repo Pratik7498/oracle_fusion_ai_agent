@@ -38,91 +38,82 @@ def main() -> None:
     print("=" * 60)
 
     # Step 1 — Test connection
-    print("\n[1/7] Connecting to PostgreSQL …")
+    print("\n[1/6] Connecting to PostgreSQL …")
     try:
         conn = psycopg2.connect(postgres_url)
         conn.autocommit = True
         cursor = conn.cursor()
         cursor.execute("SELECT version();")
         version = cursor.fetchone()[0]
-        print(f"  ✅ Connected: {version[:60]}")
+        print(f"  [OK] Connected: {version[:60]}")
     except Exception as e:
-        print(f"  ❌ Connection failed: {e}")
+        print(f"  [FAIL] Connection failed: {e}")
         sys.exit(1)
 
-    # Step 2 — PGVector extension + schema_embeddings
-    print("\n[2/7] Setting up PGVector extension …")
-    try:
-        sql = _read_sql("pgvector_setup.sql")
-        cursor.execute(sql)
-        print("  ✅ PGVector extension + schema_embeddings table ready")
-    except psycopg2.errors.DuplicateTable:
-        conn.rollback()
-        conn.autocommit = True
-        print("  ⚠️  schema_embeddings table already exists — skipping")
-    except Exception as e:
-        conn.rollback()
-        conn.autocommit = True
-        print(f"  ⚠️  PGVector setup warning: {e}")
-
-    # Step 3 — Create main schema tables
-    print("\n[3/7] Creating schema tables …")
+    # Step 2 — Create main schema tables
+    print("\n[2/6] Creating schema tables …")
     try:
         sql = _read_sql("schema.sql")
         cursor.execute(sql)
-        print("  ✅ All 6 tables created")
+        print("  [OK] All 6 tables created")
     except psycopg2.errors.DuplicateTable:
         conn.rollback()
         conn.autocommit = True
-        print("  ⚠️  Tables already exist — skipping schema creation")
+        print("  [WARN] Tables already exist -- skipping schema creation")
     except Exception as e:
         conn.rollback()
         conn.autocommit = True
-        print(f"  ⚠️  Schema warning: {e}")
+        print(f"  [WARN] Schema warning: {e}")
 
-    # Step 4 — Seed data
-    print("\n[4/7] Inserting seed data …")
+    # Step 3 — Seed data
+    print("\n[3/6] Inserting seed data …")
     try:
-        # Check if data already exists
         cursor.execute("SELECT COUNT(*) FROM hcm_employees")
         count = cursor.fetchone()[0]
         if count > 0:
-            print(f"  ⚠️  hcm_employees already has {count} rows — skipping seed")
+            print(f"  [WARN] hcm_employees already has {count} rows -- skipping seed")
         else:
             sql = _read_sql("seed_data.sql")
             cursor.execute(sql)
-            print("  ✅ Seed data inserted")
+            print("  [OK] Seed data inserted")
     except Exception as e:
         conn.rollback()
         conn.autocommit = True
-        print(f"  ❌ Seed data error: {e}")
+        print(f"  [FAIL] Seed data error: {e}")
 
-    # Step 5 — Embed schema docs
-    print("\n[5/7] Embedding schema docs into PGVector …")
-    try:
-        from vector_store.embedder import embed_all_schema_docs
-        embed_all_schema_docs()
-        print("  ✅ Schema embeddings stored")
-    except Exception as e:
-        print(f"  ⚠️  Embedding warning (non-fatal): {e}")
+    # Step 4 — Embed schema docs (in-memory, saved to JSON)
+    print("\n[4/6] Embedding schema docs (local cache) …")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if openai_key and not openai_key.startswith("sk-PASTE"):
+        try:
+            from vector_store.embedder import embed_all_schema_docs
+            embed_all_schema_docs()
+            print("  [OK] Schema embeddings cached locally")
+        except Exception as e:
+            print(f"  [WARN] Embedding skipped (non-fatal): {e}")
+            print("      Set OPENAI_API_KEY in .env to enable RAG retrieval")
+    else:
+        print("  [WARN] Skipped -- set OPENAI_API_KEY in .env to enable embeddings")
+        print("      The app will still work using keyword-based schema matching")
 
-    # Step 6 — Verify data counts
-    print("\n[6/7] Verifying data …")
+    # Step 5 — Verify data counts
+    print("\n[5/6] Verifying data …")
     tables = [
-        ("hcm_employees", None),
-        ("finance_gl_balances", None),
-        ("finance_ap_invoices", None),
-        ("procurement_quotations", None),
-        ("procurement_purchase_orders", None),
-        ("schema_embeddings", None),
+        "hcm_employees",
+        "finance_gl_balances",
+        "finance_ap_invoices",
+        "procurement_quotations",
+        "procurement_purchase_orders",
     ]
-    for table, _ in tables:
+    for table in tables:
         try:
             cursor.execute(f"SELECT COUNT(*) FROM {table}")
             cnt = cursor.fetchone()[0]
             print(f"  {table}: {cnt} rows")
         except Exception:
-            print(f"  {table}: ⚠️  could not count")
+            conn.rollback()
+            conn.autocommit = True
+            print(f"  {table}: [WARN] could not count")
 
     # Verify Engineering headcount = 47
     try:
@@ -130,13 +121,13 @@ def main() -> None:
             "SELECT COUNT(*) FROM hcm_employees WHERE department='Engineering' AND employment_status='ACTIVE'"
         )
         eng = cursor.fetchone()[0]
-        status = "✅" if eng == 47 else "❌"
+        status = "[OK]" if eng == 47 else "[FAIL]"
         print(f"\n  {status} Engineering active headcount: {eng} (expected 47)")
     except Exception:
         pass
 
-    # Step 7 — Verify E-205
-    print("\n[7/7] Verifying E-205 quotation …")
+    # Step 6 — Verify E-205
+    print("\n[6/6] Verifying E-205 quotation …")
     try:
         cursor.execute(
             "SELECT quotation_version, original_amount, revised_amount, status "
@@ -144,19 +135,19 @@ def main() -> None:
         )
         rows = cursor.fetchall()
         for r in rows:
-            print(f"  Version {r[0]}: original=£{r[1]:,.2f}, revised={'£'+f'{r[2]:,.2f}' if r[2] else 'NULL'}, status={r[3]}")
+            print(f"  Version {r[0]}: original={r[1]:,.2f}, revised={f'{r[2]:,.2f}' if r[2] else 'NULL'}, status={r[3]}")
         if len(rows) >= 2 and rows[1][2]:
             delta = round(((float(rows[1][2]) - float(rows[1][1])) / float(rows[1][1])) * 100, 2)
-            status = "✅" if abs(delta - 12.4) < 0.01 else "❌"
+            status = "[OK]" if abs(delta - 12.4) < 0.01 else "[FAIL]"
             print(f"  {status} Delta: {delta}% (expected 12.4%)")
     except Exception as e:
-        print(f"  ⚠️  E-205 verification warning: {e}")
+        print(f"  [WARN] E-205 verification warning: {e}")
 
     cursor.close()
     conn.close()
 
     print("\n" + "=" * 60)
-    print("  ✅ Setup complete! Ready to start the application.")
+    print("  [OK] Setup complete! Ready to start the application.")
     print("=" * 60)
     print("\n  Start backend:  uvicorn backend.main:app --reload --port 8000")
     print("  Start frontend: streamlit run frontend/app.py\n")

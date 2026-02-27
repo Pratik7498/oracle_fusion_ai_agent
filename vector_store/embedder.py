@@ -1,6 +1,5 @@
 """Embed schema documentation into PostgreSQL via PGVector."""
 
-import os
 import numpy as np
 import psycopg2
 from pgvector.psycopg2 import register_vector
@@ -21,7 +20,7 @@ def get_embedding(text: str, client: OpenAI) -> list[float]:
 def embed_all_schema_docs() -> None:
     """Embed all schema docs and store in PostgreSQL schema_embeddings table.
 
-    Idempotent — skips docs that already exist by doc_id.
+    Idempotent -- skips docs that already exist by doc_id.
     """
     settings = get_settings()
     client = OpenAI(api_key=settings.openai_api_key)
@@ -36,7 +35,7 @@ def embed_all_schema_docs() -> None:
             "SELECT 1 FROM schema_embeddings WHERE doc_id = %s", (doc["doc_id"],)
         )
         if cursor.fetchone():
-            print(f"  Skipping {doc['doc_id']} — already embedded")
+            print(f"  Skipping {doc['doc_id']} -- already embedded")
             continue
 
         print(f"  Embedding: {doc['title']}")
