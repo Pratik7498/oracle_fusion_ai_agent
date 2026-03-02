@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS schema_embeddings (
     domain      VARCHAR(30) NOT NULL,
     title       VARCHAR(200),
     content     TEXT NOT NULL,
-    embedding   vector(3072),
+    -- embedding   vector(3072),  -- OpenAI text-embedding-3-large (commented out)
+    embedding   vector(768),     -- HuggingFace BAAI/bge-base-en-v1.5
     created_at  TIMESTAMP DEFAULT NOW()
 );
 

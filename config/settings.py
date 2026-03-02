@@ -7,7 +7,9 @@ from functools import lru_cache
 class Settings(BaseSettings):
     """Central configuration for the Oracle Fusion AI Agent POC."""
 
-    openai_api_key: str
+    # openai_api_key: str  # commented out -- switched to Groq + HuggingFace
+    groq_api_key: str
+    huggingface_api_key: str
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_db: str = "oracle_fusion_poc"

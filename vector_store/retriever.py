@@ -1,10 +1,17 @@
-"""Retrieve relevant schema context via PGVector cosine similarity search."""
+"""Retrieve relevant schema context via PGVector cosine similarity search.
+
+Switched from OpenAI text-embedding-3-large to HuggingFace BAAI/bge-base-en-v1.5.
+"""
 
 import numpy as np
 import psycopg2
 from pgvector.psycopg2 import register_vector
-from openai import OpenAI
+# from openai import OpenAI  # commented out -- switched to HuggingFace
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from config.settings import get_settings
+
+# BGE models require this prefix for retrieval queries
+_BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
 def retrieve_schema_context(
@@ -62,13 +69,19 @@ def retrieve_schema_context(
                 })
         return results[:top_k]
 
-    # Embed the query
-    client = OpenAI(api_key=settings.openai_api_key)
-    response = client.embeddings.create(
-        input=[query],
-        model="text-embedding-3-large",
+    # Embed the query using HuggingFace BGE with query prefix
+    # OpenAI version (commented out):
+    # client = OpenAI(api_key=settings.openai_api_key)
+    # response = client.embeddings.create(input=[query], model="text-embedding-3-large")
+    # query_embedding = np.array(response.data[0].embedding, dtype=np.float32)
+
+    embeddings_model = HuggingFaceEndpointEmbeddings(
+        model="BAAI/bge-base-en-v1.5",
+        huggingfacehub_api_token=settings.huggingface_api_key,
     )
-    query_embedding = np.array(response.data[0].embedding, dtype=np.float32)
+    prefixed_query = _BGE_QUERY_PREFIX + query
+    raw_embedding = embeddings_model.embed_query(prefixed_query)
+    query_embedding = np.array(raw_embedding, dtype=np.float32)
 
     if domain == "CROSS_DOMAIN":
         cursor.execute(

@@ -1,4 +1,7 @@
-"""LangChain agent orchestrator — ties tools, memory, and GPT-4o together."""
+"""LangChain agent orchestrator -- ties tools, memory, and Llama 3.3 70B together.
+
+Switched from OpenAI GPT-4o (ChatOpenAI) to Groq Llama 3.3 70B (ChatGroq).
+"""
 
 from dataclasses import dataclass, field
 from typing import Optional
@@ -6,7 +9,8 @@ import time
 import json
 import logging
 
-from langchain_openai import ChatOpenAI
+# from langchain_openai import ChatOpenAI  # commented out -- switched to Groq
+from langchain_groq import ChatGroq
 from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.memory import ConversationBufferWindowMemory
@@ -41,10 +45,16 @@ class OracleFusionAgent:
 
     def __init__(self) -> None:
         settings = get_settings()
-        self.llm = ChatOpenAI(
-            model="gpt-4o",
+        # OpenAI version (commented out):
+        # self.llm = ChatOpenAI(
+        #     model="gpt-4o",
+        #     temperature=0,
+        #     api_key=settings.openai_api_key,
+        # )
+        self.llm = ChatGroq(
+            model="llama-3.3-70b-versatile",
             temperature=0,
-            api_key=settings.openai_api_key,
+            groq_api_key=settings.groq_api_key,
         )
         self.tools = [hcm_query_tool, finance_query_tool, procurement_query_tool]
         self.memories: dict[str, ConversationBufferWindowMemory] = {}
@@ -56,13 +66,13 @@ class OracleFusionAgent:
             "- finance_query_tool: for GL balances, budget vs actual, AP invoices, payment aging\n"
             "- procurement_query_tool: for purchase orders, quotations, supplier spend, engagement deltas\n\n"
             "Rules:\n"
-            "1. ALWAYS use the appropriate tool to fetch real data — never make up numbers\n"
+            "1. ALWAYS use the appropriate tool to fetch real data -- never make up numbers\n"
             "2. After getting tool results, provide a clear, concise business-focused answer\n"
             "3. Highlight key numbers prominently (e.g. \"47 employees\", \"+12.4% delta\")\n"
             "4. If the tool returns chart_data or metrics, acknowledge them in your answer\n"
-            "5. Keep answers professional and to the point — max 4 sentences for simple queries\n"
+            "5. Keep answers professional and to the point -- max 4 sentences for simple queries\n"
             "6. If a query spans multiple domains, use multiple tools\n"
-            "7. Never reveal raw SQL to the user unless they ask — the UI shows it separately"
+            "7. Never reveal raw SQL to the user unless they ask -- the UI shows it separately"
         )
 
         prompt = ChatPromptTemplate.from_messages(

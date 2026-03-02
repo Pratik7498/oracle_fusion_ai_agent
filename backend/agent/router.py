@@ -1,8 +1,12 @@
-"""Intent classification using GPT-4o."""
+"""Intent classification using Groq (Llama 3.3 70B).
+
+Switched from OpenAI GPT-4o to Groq Llama 3.3 70B Versatile.
+"""
 
 import json
 import logging
-from openai import OpenAI
+# from openai import OpenAI  # commented out -- switched to Groq
+from groq import Groq
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -46,10 +50,12 @@ def classify_intent(query: str) -> dict:
     """
     try:
         settings = get_settings()
-        client = OpenAI(api_key=settings.openai_api_key)
+        # OpenAI version (commented out):
+        # client = OpenAI(api_key=settings.openai_api_key)
+        client = Groq(api_key=settings.groq_api_key)
 
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="llama-3.3-70b-versatile",  # was "gpt-4o"
             temperature=0,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
