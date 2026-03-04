@@ -21,12 +21,13 @@ Rules you MUST follow:
 1. Generate ONLY a SELECT statement -- never INSERT, UPDATE, DELETE, DROP, or any DDL
 2. Return ONLY the raw SQL -- no markdown, no code blocks, no explanation, no semicolons
 3. Use exact column and table names from the schema provided
-4. Always add LIMIT 1000 unless the query specifically requests all records
+4. Always add LIMIT 100 unless the query specifically requests all records or a different limit
 5. Use ILIKE for case-insensitive text matching
 6. For date comparisons use CURRENT_DATE
 7. For fiscal quarters: Q1=JAN-MAR, Q2=APR-JUN, Q3=JUL-SEP, Q4=OCT-DEC
 8. Never put user values directly in SQL -- but for this POC, string interpolation is acceptable
-9. Return only the SQL query, starting with SELECT"""
+9. Return only the SQL query, starting with SELECT
+10. When query mentions 'budget' AND 'actual' together (budget vs actual, actual vs budget, percentage difference between actual and budget), ALWAYS use the finance_gl_balances view with balance_id as the primary key -- NEVER use fin_ap_invoices for budget queries (AP invoices have no budget_amount column). If user says 'invoice id' but asks about budget, treat it as balance_id in finance_gl_balances."""
 
 
 def validate_sql(sql: str) -> tuple[bool, str]:
@@ -64,7 +65,7 @@ def validate_sql(sql: str) -> tuple[bool, str]:
 
     # Add LIMIT if not present
     if "LIMIT" not in upper:
-        cleaned = cleaned + "\nLIMIT 1000"
+        cleaned = cleaned + "\nLIMIT 100"
 
     return True, cleaned
 
@@ -103,7 +104,7 @@ def generate_sql(
             {"role": "system", "content": _SQL_SYSTEM_PROMPT + context_text},
             {"role": "user", "content": user_prompt},
         ],
-        max_tokens=600,
+        max_tokens=400,
     )
 
     raw_sql = response.choices[0].message.content.strip()

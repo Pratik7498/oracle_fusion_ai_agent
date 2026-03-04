@@ -24,6 +24,7 @@ BADGE_COLORS = {
     "FINANCE": "#A855F7",
     "PROCUREMENT": "#F59E0B",
     "CROSS_DOMAIN": "#3B82F6",
+    "OUT_OF_SCOPE": "#EF4444",
 }
 
 # ── Custom CSS ──
@@ -63,35 +64,56 @@ with st.sidebar:
     st.divider()
     st.markdown('<p class="section-label">Quick Queries</p>', unsafe_allow_html=True)
 
+    # Fetch dynamic queries from the API (cached per session)
+    if "quick_queries" not in st.session_state:
+        try:
+            qr = requests.get(f"{API_URL}/sample-queries", timeout=5)
+            st.session_state.quick_queries = qr.json().get("queries", {})
+        except Exception:
+            st.session_state.quick_queries = {
+                "HCM": ["Show headcount by department", "What is the attrition rate?",
+                         "Show average salary by department", "List top 10 highest paid employees"],
+                "FINANCE": ["Which cost centres are over budget?", "Show overdue AP invoices",
+                            "Show total AP outstanding", "Show budget vs actual variance"],
+                "PROCUREMENT": ["Show purchase orders by status", "Which supplier has highest PO spend?",
+                                "Show pending POs", "Show requisitions pending approval"],
+            }
+
+    qq = st.session_state.quick_queries
+
     with st.expander("🟢 HCM / People"):
-        if st.button("How many employees are in Engineering?", key="q1"):
-            st.session_state.pending_query = "How many employees are in Engineering?"
-        if st.button("What is the attrition rate?", key="q2"):
-            st.session_state.pending_query = "What is the attrition rate?"
-        if st.button("Show salary distribution by grade", key="q3"):
-            st.session_state.pending_query = "Show salary distribution by grade"
+        for i, q in enumerate(qq.get("HCM", [])):
+            if st.button(q, key=f"hcm_q{i}"):
+                st.session_state.pending_query = q
 
     with st.expander("🟣 Finance"):
-        if st.button("Which departments are over budget?", key="q4"):
-            st.session_state.pending_query = "Which departments are over budget?"
-        if st.button("Show overdue AP invoices", key="q5"):
-            st.session_state.pending_query = "Show overdue AP invoices"
-        if st.button("What is the total outstanding AP?", key="q6"):
-            st.session_state.pending_query = "What is the total outstanding AP?"
+        for i, q in enumerate(qq.get("FINANCE", [])):
+            if st.button(q, key=f"fin_q{i}"):
+                st.session_state.pending_query = q
 
     with st.expander("🟡 Procurement"):
-        if st.button("What is the delta on E-205?", key="q7"):
-            st.session_state.pending_query = "What is the delta on Engagement E-205?"
-        if st.button("Show pending POs older than 14 days", key="q8"):
-            st.session_state.pending_query = "Show pending purchase orders older than 14 days"
-        if st.button("Which supplier has highest PO spend?", key="q9"):
-            st.session_state.pending_query = "Which supplier has the highest total PO spend?"
+        for i, q in enumerate(qq.get("PROCUREMENT", [])):
+            if st.button(q, key=f"proc_q{i}"):
+                st.session_state.pending_query = q
 
     st.divider()
-    if st.button("🗑️ Clear Chat"):
-        st.session_state.messages = []
-        st.session_state.session_id = str(uuid.uuid4())
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Refresh Queries"):
+            # Re-fetch dynamic queries
+            try:
+                qr = requests.get(f"{API_URL}/sample-queries", timeout=5)
+                st.session_state.quick_queries = qr.json().get("queries", {})
+            except Exception:
+                pass
+            st.rerun()
+    with col2:
+        if st.button("🗑️ Clear Chat"):
+            st.session_state.messages = []
+            st.session_state.session_id = str(uuid.uuid4())
+            if "quick_queries" in st.session_state:
+                del st.session_state.quick_queries
+            st.rerun()
 
     st.caption("Powered by Llama 3.3 70B (Groq) + PostgreSQL 15")
 

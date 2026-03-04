@@ -1,80 +1,188 @@
-"""Schema documentation for vector embedding — used by PGVector RAG retrieval."""
+"""Schema documentation for vector embedding — used by PGVector RAG retrieval.
+Covers the full 63-table Oracle Fusion ERP schema + 3 legacy views.
+"""
 
 SCHEMA_DOCS: list[dict] = [
+    # ================================================================
+    # HCM DOMAIN
+    # ================================================================
     {
-        "doc_id": "hcm_employees_table",
+        "doc_id": "hcm_employees_view",
         "domain": "HCM",
-        "title": "HCM Employees Table — hcm_employees",
+        "title": "HCM Employees View — hcm_employees",
         "content": (
-            "Table: hcm_employees\n"
-            "Stores all employee data including active and terminated staff.\n"
+            "View: hcm_employees (legacy-compatible view joining persons + assignments)\n"
+            "Exposes employee data including active and terminated staff.\n"
+            "Built from: hcm_persons, hcm_person_names, hcm_person_emails, hcm_assignments, "
+            "hcm_employment_periods, hcm_departments, hcm_grades, hcm_locations\n\n"
             "Columns:\n"
-            "- employee_id: SERIAL PRIMARY KEY, unique identifier\n"
-            "- full_name: VARCHAR, employee's full name\n"
-            "- department: VARCHAR, one of: Engineering, Finance, HR, Procurement, Marketing, Sales, Operations\n"
-            "- job_title: VARCHAR, role title\n"
-            "- grade_level: VARCHAR, G3(junior) to G8(director/VP)\n"
-            "- salary: NUMERIC, annual salary in GBP\n"
-            "- hire_date: DATE, when employee joined\n"
-            "- termination_date: DATE, NULL for active employees, populated for leavers\n"
-            "- employment_status: VARCHAR, 'ACTIVE' or 'TERMINATED'\n"
-            "- location: VARCHAR, one of: London, Manchester, Birmingham, Remote\n"
-            "- manager_id: INTEGER FK to employee_id\n\n"
+            "- employee_id: person_id, unique identifier\n"
+            "- full_name: first + last name\n"
+            "- department: from hcm_departments via assignment\n"
+            "- job_title: from assignment\n"
+            "- grade_level: grade code, G3(junior) to G8(director)\n"
+            "- salary: annual salary GBP from assignment\n"
+            "- hire_date: employment period start\n"
+            "- termination_date: NULL for active, populated for leavers\n"
+            "- employment_status: 'ACTIVE' or 'TERMINATED'\n"
+            "- location: London, Manchester, Birmingham, Remote\n"
+            "- manager_id: manager person_id\n\n"
             "Key filters:\n"
-            "- Active employees: WHERE employment_status = 'ACTIVE'\n"
-            "- Terminated: WHERE employment_status = 'TERMINATED' AND termination_date IS NOT NULL\n"
-            "- By department: WHERE department = 'Engineering'\n"
-            "- Engineering headcount: SELECT COUNT(*) FROM hcm_employees WHERE department='Engineering' AND employment_status='ACTIVE'  -- returns 47\n\n"
+            "- Active: WHERE employment_status = 'ACTIVE'\n"
+            "- Engineering headcount: SELECT COUNT(*) FROM hcm_employees "
+            "WHERE department='Engineering' AND employment_status='ACTIVE' -- returns 47\n\n"
             "Example queries:\n"
             "Q: \"How many employees are in Engineering?\"\n"
-            "A: SELECT department, COUNT(*) as headcount FROM hcm_employees WHERE employment_status='ACTIVE' GROUP BY department ORDER BY headcount DESC\n\n"
+            "A: SELECT department, COUNT(*) as headcount FROM hcm_employees "
+            "WHERE employment_status='ACTIVE' GROUP BY department ORDER BY headcount DESC\n\n"
             "Q: \"List employees in Finance above Grade 5\"\n"
-            "A: SELECT full_name, job_title, grade_level, salary FROM hcm_employees WHERE department='Finance' AND employment_status='ACTIVE' AND grade_level IN ('G6','G7','G8') ORDER BY grade_level DESC"
+            "A: SELECT full_name, job_title, grade_level, salary FROM hcm_employees "
+            "WHERE department='Finance' AND employment_status='ACTIVE' "
+            "AND grade_level IN ('G6','G7','G8') ORDER BY grade_level DESC"
+        ),
+    },
+    {
+        "doc_id": "hcm_persons_table",
+        "domain": "HCM",
+        "title": "HCM Persons — Core Identity Table",
+        "content": (
+            "Table: hcm_persons\n"
+            "Core identity record. No org/job/department context — that lives in hcm_assignments.\n"
+            "Columns: person_id PK, person_number UNIQUE, first_name, last_name, "
+            "date_of_birth, gender, nationality, person_type, status\n"
+            "80 persons total (60 active, 20 terminated)\n\n"
+            "Related tables:\n"
+            "- hcm_person_names: historical name records (name_type, effective_from/to)\n"
+            "- hcm_person_emails: email addresses (email_type, is_primary)\n"
+            "- hcm_assignments: org context (position, dept, grade, job, salary)\n"
+            "- hcm_employment_periods: hire/terminate date spans"
+        ),
+    },
+    {
+        "doc_id": "hcm_assignments_table",
+        "domain": "HCM",
+        "title": "HCM Assignments — Position & Org Context",
+        "content": (
+            "Table: hcm_assignments\n"
+            "Assignment-based modeling: ALL org context lives here, NOT on persons.\n"
+            "Columns: assignment_id PK, assignment_number, person_id FK, position_id FK, "
+            "dept_id FK, org_id FK, grade_id FK, job_id FK, location_id FK, "
+            "assignment_type (PRIMARY), assignment_status (ACTIVE/INACTIVE), "
+            "employment_status, job_title, salary, manager_person_id FK, "
+            "effective_from, effective_to\n\n"
+            "Key: To get current employee info, filter:\n"
+            "WHERE assignment_type='PRIMARY' AND assignment_status='ACTIVE'\n\n"
+            "Example: SELECT p.first_name, p.last_name, a.job_title, a.salary, "
+            "d.dept_name FROM hcm_assignments a JOIN hcm_persons p ON p.person_id=a.person_id "
+            "JOIN hcm_departments d ON d.dept_id=a.dept_id "
+            "WHERE a.assignment_status='ACTIVE'"
+        ),
+    },
+    {
+        "doc_id": "hcm_org_structure",
+        "domain": "HCM",
+        "title": "HCM Organization Structure — Departments, Positions, Jobs, Grades",
+        "content": (
+            "Organization hierarchy tables:\n\n"
+            "hcm_organizations: Business units (org_id PK, org_code, org_name, org_type, parent_org_id self-ref)\n"
+            "hcm_departments: 10 departments (Engineering, Finance, HR, Procurement, Marketing, Sales, Operations, IT, Legal, Executive). "
+            "dept_id PK, dept_code D001-D010, dept_name, org_id FK, cost_centre_code\n"
+            "hcm_locations: 4 locations (London HQ, Manchester, Birmingham, Remote). location_id PK, location_code LOC001-LOC004\n"
+            "hcm_jobs: 20 job definitions (job_id PK, job_code, job_name, job_family, job_level)\n"
+            "hcm_positions: Position slots (position_id PK, dept_id FK, job_id FK, location_id FK, grade_id FK)\n"
+            "hcm_grades: 6 grades G3-G8 (grade_id PK, grade_code, min/mid/max salary)\n\n"
+            "Example: SELECT d.dept_name, COUNT(a.assignment_id) as headcount "
+            "FROM hcm_departments d LEFT JOIN hcm_assignments a ON a.dept_id=d.dept_id "
+            "AND a.assignment_status='ACTIVE' GROUP BY d.dept_name"
         ),
     },
     {
         "doc_id": "hcm_attrition_calc",
         "domain": "HCM",
-        "title": "HCM Attrition Rate — Calculation Method",
+        "title": "HCM Attrition Rate Calculation",
         "content": (
-            "Attrition rate measures the percentage of employees who left the organisation in a period.\n"
-            "Formula: attrition_rate = (count_terminated_in_period / average_headcount) * 100\n"
-            "average_headcount = (headcount_at_start_of_period + headcount_at_end_of_period) / 2\n\n"
-            "SQL to get terminated employees in a date range:\n"
-            "SELECT COUNT(*) FROM hcm_employees\n"
-            "WHERE employment_status='TERMINATED'\n"
+            "Attrition rate = (terminated_count / average_headcount) * 100\n"
+            "average_headcount = (start_headcount + end_headcount) / 2\n\n"
+            "SQL for terminated in date range:\n"
+            "SELECT COUNT(*) FROM hcm_employees WHERE employment_status='TERMINATED' "
             "AND termination_date BETWEEN '2025-01-01' AND '2025-12-31'\n\n"
-            "SQL for current headcount:\n"
-            "SELECT COUNT(*) FROM hcm_employees WHERE employment_status='ACTIVE'\n\n"
-            "IMPORTANT: The attrition rate percentage calculation is always done in Python (Pandas), not in SQL.\n"
-            "The SQL just retrieves the raw counts. Python then applies the formula.\n\n"
-            "For YTD attrition, use: termination_date >= DATE_TRUNC('year', CURRENT_DATE)"
+            "IMPORTANT: Percentage calculation done in Python Pandas, not SQL.\n"
+            "SQL retrieves raw counts only.\n"
+            "For YTD: termination_date >= DATE_TRUNC('year', CURRENT_DATE)"
         ),
     },
     {
-        "doc_id": "finance_gl_balances_table",
-        "domain": "FINANCE",
-        "title": "Finance GL Balances — finance_gl_balances",
+        "doc_id": "hcm_compensation_payroll",
+        "domain": "HCM",
+        "title": "HCM Compensation, Salary History & Payroll",
         "content": (
-            "Table: finance_gl_balances\n"
-            "Stores General Ledger budget vs actual amounts by cost centre and period.\n"
-            "Columns:\n"
-            "- balance_id: SERIAL PRIMARY KEY\n"
-            "- cost_centre: VARCHAR, CC001 to CC010\n"
-            "- cost_centre_name: VARCHAR, e.g. CC001=Engineering, CC002=Finance, CC003=Marketing, CC004=HR, CC005=Procurement\n"
-            "- account_code: VARCHAR\n"
-            "- account_name: VARCHAR\n"
-            "- period_name: VARCHAR, format 'MON-YYYY' e.g. 'JAN-2025', 'OCT-2025', 'DEC-2025'\n"
-            "- actual_amount: NUMERIC, actual spend in GBP\n"
-            "- budget_amount: NUMERIC, planned spend in GBP\n"
-            "- fiscal_year: INTEGER\n"
-            "- fiscal_quarter: INTEGER, 1-4\n\n"
-            "Budget variance: variance = actual_amount - budget_amount (positive = over budget)\n"
-            "CC003 (Marketing) is over budget in Q4 2025 (fiscal_quarter=4)\n\n"
+            "Tables for pay management:\n\n"
+            "hcm_salary_history: assignment_id FK, old_salary, new_salary, change_reason, effective_date\n"
+            "hcm_compensation_elements: assignment_id FK, element_type (BASE_SALARY/BONUS), amount, frequency\n"
+            "hcm_payroll_runs: payroll_run_id PK, period_name (JAN-2025 etc), total_gross/deductions/net\n"
+            "hcm_payroll_results: assignment_id FK, payroll_run_id FK, gross_pay, tax/NI/pension deducted, net_pay\n"
+            "hcm_cost_allocations: assignment_id FK, cost_centre_id FK→fin_cost_centres (CROSS-DOMAIN)\n\n"
+            "Example: SELECT pr.period_name, SUM(pr2.gross_pay) as total_gross "
+            "FROM hcm_payroll_runs pr JOIN hcm_payroll_results pr2 ON pr.payroll_run_id=pr2.payroll_run_id "
+            "GROUP BY pr.period_name"
+        ),
+    },
+    {
+        "doc_id": "hcm_workforce_talent",
+        "domain": "HCM",
+        "title": "HCM Workforce Actions, Performance & Training",
+        "content": (
+            "Lifecycle and talent tables:\n\n"
+            "hcm_employment_periods: person_id FK, start_date, end_date, status\n"
+            "hcm_workforce_actions: person_id FK, assignment_id FK, action_type (HIRE/TERMINATE/PROMOTE/TRANSFER)\n"
+            "hcm_termination_reasons: reason_code, reason_name, is_voluntary\n"
+            "hcm_promotions: assignment_id FK, old/new grade, old/new salary, effective_date\n"
+            "hcm_transfers: assignment_id FK, from/to dept_id, from/to location_id\n"
+            "hcm_performance_reviews: person_id FK, review_period, overall_rating, rating_score, goals_met_pct\n"
+            "hcm_training_records: person_id FK, course_name, provider, score, certificate_id\n\n"
+            "Example: SELECT p.first_name||' '||p.last_name as name, pr.overall_rating, pr.rating_score "
+            "FROM hcm_performance_reviews pr JOIN hcm_persons p ON p.person_id=pr.person_id "
+            "WHERE pr.review_period='FY2025' ORDER BY pr.rating_score DESC"
+        ),
+    },
+
+    # ================================================================
+    # FINANCE DOMAIN
+    # ================================================================
+    {
+        "doc_id": "fin_gl_balances_table",
+        "domain": "FINANCE",
+        "title": "Finance GL Balances — fin_gl_balances and finance_gl_balances view",
+        "content": (
+            "Table: fin_gl_balances (base table)\n"
+            "GL summary balances by cost centre, account, and period.\n"
+            "Columns: balance_id PK (INTEGER, 1-130), cost_centre_id FK, "
+            "account_code_id FK, period_name (JAN-2025 format), "
+            "fiscal_year, fiscal_quarter, actual_amount NUMERIC (actual spend GBP), "
+            "budget_amount NUMERIC (planned budget GBP), "
+            "period_debit, period_credit, period_net, begin_balance, end_balance, currency\n\n"
+            "View: finance_gl_balances (PREFERRED for querying — flat, no JOINs needed)\n"
+            "Columns: balance_id, cost_centre (CC001-CC010), cost_centre_name, "
+            "account_code, account_name, period_name, actual_amount, budget_amount, "
+            "fiscal_year, fiscal_quarter, currency\n\n"
+            "130 rows: 10 cost centres × 13 periods (JAN-2025 to JAN-2026)\n"
+            "balance_id 1-13 = CC001 Engineering, 14-26 = CC002 Finance, "
+            "27-39 = CC003 Marketing, 40-52 = CC004 HR, 53-65 = CC005 Procurement, "
+            "66-78 = CC006 Sales, 79-91 = CC007 Operations, 92-104 = CC008 IT, "
+            "105-117 = CC009 Legal, 118-130 = CC010 Executive\n"
+            "CC003 Marketing is OVER BUDGET in Q4 2025\n\n"
+            "IMPORTANT: When users say 'invoice id' or 'id' and ask about 'actual vs budget' or "
+            "'percentage difference between actual and budget', they mean balance_id in THIS table "
+            "(finance_gl_balances), NOT invoice_id in fin_ap_invoices. AP invoices have NO budget column.\n\n"
+            "Variance = actual_amount - budget_amount (positive = over budget)\n\n"
             "Example queries:\n"
+            "Q: \"What is the percentage difference between actual and budget for balance_id 38-47?\"\n"
+            "A: SELECT balance_id, cost_centre_name, period_name, actual_amount, budget_amount, "
+            "ROUND(((actual_amount - budget_amount) / NULLIF(budget_amount,0)) * 100, 2) as pct_variance "
+            "FROM finance_gl_balances WHERE balance_id BETWEEN 38 AND 47\n\n"
             "Q: \"Which departments are over budget this quarter?\"\n"
             "A: SELECT cost_centre_name, SUM(actual_amount) as actual, SUM(budget_amount) as budget, "
-            "SUM(actual_amount-budget_amount) as variance FROM finance_gl_balances "
+            "SUM(actual_amount - budget_amount) as variance FROM finance_gl_balances "
             "WHERE fiscal_year=2025 AND fiscal_quarter=4 GROUP BY cost_centre, cost_centre_name "
             "HAVING SUM(actual_amount) > SUM(budget_amount) ORDER BY variance DESC\n\n"
             "Q: \"What is the GL balance for CC003?\"\n"
@@ -83,95 +191,245 @@ SCHEMA_DOCS: list[dict] = [
         ),
     },
     {
-        "doc_id": "finance_ap_invoices_table",
+        "doc_id": "fin_gl_journals",
         "domain": "FINANCE",
-        "title": "Finance AP Invoices — finance_ap_invoices",
+        "title": "Finance GL Journals — Headers & Lines",
         "content": (
-            "Table: finance_ap_invoices\n"
-            "Accounts Payable invoice register tracking all supplier invoices.\n"
-            "Columns:\n"
-            "- invoice_id: SERIAL PRIMARY KEY\n"
-            "- invoice_number: VARCHAR, unique reference\n"
-            "- supplier_name: VARCHAR, supplier company name\n"
-            "- invoice_date: DATE, invoice raised date\n"
-            "- due_date: DATE, payment due date\n"
-            "- invoice_amount: NUMERIC, total invoice value GBP\n"
-            "- paid_amount: NUMERIC, amount paid so far\n"
-            "- outstanding_amount: NUMERIC, remaining unpaid (invoice_amount - paid_amount)\n"
-            "- status: VARCHAR, one of: APPROVED, PENDING, OVERDUE, PAID\n"
-            "- cost_centre: VARCHAR\n\n"
-            "AP Aging calculation: days_overdue = CURRENT_DATE - due_date (for OVERDUE invoices)\n"
-            "Aging buckets (done in Python Pandas):\n"
-            "  0-30 days, 31-60 days, 61-90 days, 90+ days\n\n"
-            "Example queries:\n"
-            "Q: \"Show AP invoices overdue by more than 60 days\"\n"
-            "A: SELECT invoice_number, supplier_name, invoice_amount, outstanding_amount, due_date, "
-            "(CURRENT_DATE - due_date) as days_overdue FROM finance_ap_invoices "
-            "WHERE status='OVERDUE' AND due_date < CURRENT_DATE - INTERVAL '60 days' ORDER BY due_date ASC\n\n"
-            "Q: \"What is the total outstanding AP?\"\n"
-            "A: SELECT SUM(outstanding_amount) as total_outstanding, COUNT(*) as invoice_count "
-            "FROM finance_ap_invoices WHERE status IN ('OVERDUE','PENDING')"
+            "GL Journal tables (ledger-driven):\n\n"
+            "fin_ledgers: ledger_id PK, ledger_code, ledger_name, currency\n"
+            "fin_chart_of_accounts: coa_id PK, coa_code, ledger_id FK\n"
+            "fin_coa_segments: segment_id PK, coa_id FK, segment_name (Company/Cost Centre/Account/Project)\n"
+            "fin_account_codes: account_code_id PK, account_code (5001-5010=Expense, 4001-4002=Revenue, "
+            "1001-1002=Asset, 2001-2002=Liability), coa_id FK\n"
+            "fin_cost_centres: cost_centre_id PK, cost_centre_code CC001-CC010, dept_id FK→hcm_departments\n"
+            "fin_reporting_periods: period_id PK, period_name, fiscal_year, quarter, start/end_date\n"
+            "fin_currency_rates: exchange rates (GBP/USD/EUR)\n\n"
+            "fin_gl_journal_headers: journal_header_id PK, journal_number, ledger_id FK, period_id FK, "
+            "total_debit, total_credit, status, created_by FK→hcm_persons\n"
+            "fin_gl_journal_lines: journal_line_id PK, journal_header_id FK, account_code_id FK, "
+            "cost_centre_id FK, debit_amount, credit_amount"
         ),
     },
     {
+        "doc_id": "fin_budgets",
+        "domain": "FINANCE",
+        "title": "Finance Budgets — Version-controlled Budget Management",
+        "content": (
+            "Budget tables:\n\n"
+            "fin_budget_versions: version control (ORIGINAL, REVISED, FORECAST) per fiscal year\n"
+            "fin_budget_headers: budget_header_id PK, budget_name, ledger_id FK, budget_version_id FK, fiscal_year\n"
+            "fin_budget_lines: budget_line_id PK, budget_header_id FK, cost_centre_id FK, "
+            "account_code_id FK, period_name, amount\n\n"
+            "Budget is at COST CENTRE + ACCOUNT CODE level per period.\n\n"
+            "Example: SELECT cc.cost_centre_name, SUM(bl.amount) as budget_total "
+            "FROM fin_budget_lines bl JOIN fin_cost_centres cc ON cc.cost_centre_id=bl.cost_centre_id "
+            "JOIN fin_budget_headers bh ON bh.budget_header_id=bl.budget_header_id "
+            "WHERE bh.fiscal_year=2025 GROUP BY cc.cost_centre_name"
+        ),
+    },
+    {
+        "doc_id": "fin_ap_invoices_table",
+        "domain": "FINANCE",
+        "title": "Finance AP Invoices — Header/Line/Distribution",
+        "content": (
+            "AP Invoice tables (Header → Line → Distribution structure):\n\n"
+            "fin_ap_invoices: invoice_id PK, invoice_number, supplier_id FK→sup_suppliers, "
+            "ledger_id FK, invoice_date, due_date, invoice_amount, paid_amount, outstanding_amount, "
+            "status (PAID/APPROVED/PENDING/OVERDUE), created_by/approved_by FK→hcm_persons\n"
+            "30 invoices (invoice_id 1-30): 15 PAID, 3 APPROVED, 12 PENDING\n"
+            "NOTE: AP invoices do NOT have budget_amount. If user asks about 'actual vs budget' "
+            "or 'percentage difference between actual and budget', use finance_gl_balances instead.\n\n"
+            "fin_ap_invoice_lines: invoice_line_id PK, invoice_id FK, line_number, description, "
+            "quantity, unit_price, line_amount, po_line_id FK→proc_po_lines (3-WAY MATCH)\n\n"
+            "fin_ap_invoice_distributions: distribution_id PK, invoice_line_id FK, "
+            "cost_centre_id FK→fin_cost_centres, account_code_id FK→fin_account_codes\n\n"
+            "Example: SELECT i.invoice_number, s.supplier_name, i.invoice_amount, i.outstanding_amount, "
+            "i.due_date, (CURRENT_DATE - i.due_date) as days_overdue "
+            "FROM fin_ap_invoices i JOIN sup_suppliers s ON s.supplier_id=i.supplier_id "
+            "WHERE i.status='OVERDUE' ORDER BY i.due_date"
+        ),
+    },
+    {
+        "doc_id": "fin_ap_payments",
+        "domain": "FINANCE",
+        "title": "Finance AP Payments & Schedules",
+        "content": (
+            "Payment tables:\n\n"
+            "fin_ap_payments: payment_id PK, payment_number, supplier_id FK, payment_date, "
+            "payment_amount, payment_method (BACS/CHAPS), status\n"
+            "fin_ap_payment_schedules: schedule_id PK, invoice_id FK, installment_num, "
+            "due_date, amount_due, amount_paid, status (OPEN/PAID)\n\n"
+            "Example: SELECT s.supplier_name, SUM(p.payment_amount) as total_paid "
+            "FROM fin_ap_payments p JOIN sup_suppliers s ON s.supplier_id=p.supplier_id "
+            "GROUP BY s.supplier_name ORDER BY total_paid DESC"
+        ),
+    },
+    {
+        "doc_id": "fin_ar_tables",
+        "domain": "FINANCE",
+        "title": "Finance AR — Customers, Invoices & Receipts",
+        "content": (
+            "Accounts Receivable tables:\n\n"
+            "fin_ar_customers: customer_id PK, customer_number, customer_name, customer_type, "
+            "payment_terms, credit_limit\n"
+            "5 customers: British Airways, Tesco, HSBC, National Grid, GlaxoSmithKline\n\n"
+            "fin_ar_invoices: ar_invoice_id PK, invoice_number, customer_id FK, invoice_date, "
+            "due_date, invoice_amount, paid_amount, outstanding, status (OPEN/CLOSED)\n\n"
+            "fin_ar_receipts: receipt_id PK, receipt_number, ar_invoice_id FK, receipt_date, "
+            "receipt_amount, payment_method\n\n"
+            "Example: SELECT c.customer_name, SUM(i.outstanding) as total_outstanding "
+            "FROM fin_ar_invoices i JOIN fin_ar_customers c ON c.customer_id=i.customer_id "
+            "WHERE i.status='OPEN' GROUP BY c.customer_name"
+        ),
+    },
+
+    # ================================================================
+    # SUPPLIER MASTER (UNIFIED)
+    # ================================================================
+    {
+        "doc_id": "sup_suppliers_table",
+        "domain": "PROCUREMENT",
+        "title": "Unified Supplier Master — sup_suppliers",
+        "content": (
+            "Tables: sup_suppliers, sup_supplier_sites, sup_supplier_contacts\n"
+            "UNIFIED supplier master used by BOTH Finance AP and Procurement.\n\n"
+            "sup_suppliers: supplier_id PK, supplier_number SUP001-SUP020, supplier_name, "
+            "payment_terms, supplier_type (IT_SERVICES/HARDWARE/CONSULTING/FACILITIES/TELECOM), "
+            "risk_rating (LOW/MEDIUM/HIGH), qualification_status, status\n"
+            "20 suppliers: Accenture, Deloitte, PwC, KPMG, BT, Computacenter, etc.\n\n"
+            "sup_supplier_sites: site_id PK, supplier_id FK, site_code, address, is_primary\n"
+            "sup_supplier_contacts: contact_id PK, supplier_id FK, contact_name, email, is_primary\n\n"
+            "Cross-domain usage:\n"
+            "- fin_ap_invoices.supplier_id → sup_suppliers\n"
+            "- proc_po_headers.supplier_id → sup_suppliers\n"
+            "- proc_quotation_headers.supplier_id → sup_suppliers\n"
+            "- proc_contract_headers.supplier_id → sup_suppliers\n\n"
+            "Example: SELECT s.supplier_name, s.supplier_type, s.risk_rating, "
+            "COUNT(DISTINCT i.invoice_id) as invoice_count, COUNT(DISTINCT ph.po_header_id) as po_count "
+            "FROM sup_suppliers s LEFT JOIN fin_ap_invoices i ON i.supplier_id=s.supplier_id "
+            "LEFT JOIN proc_po_headers ph ON ph.supplier_id=s.supplier_id "
+            "GROUP BY s.supplier_id, s.supplier_name, s.supplier_type, s.risk_rating"
+        ),
+    },
+
+    # ================================================================
+    # PROCUREMENT DOMAIN
+    # ================================================================
+    {
         "doc_id": "procurement_quotations_table",
         "domain": "PROCUREMENT",
-        "title": "Procurement Quotations — procurement_quotations (includes E-205 delta)",
+        "title": "Procurement Quotations — Version-controlled (includes E-205 delta)",
         "content": (
-            "Table: procurement_quotations\n"
-            "Stores engagement quotations from suppliers, including original and revised versions.\n"
-            "Columns:\n"
-            "- quotation_id: SERIAL PRIMARY KEY\n"
-            "- engagement_id: VARCHAR, format E-201 to E-215\n"
-            "- engagement_name: VARCHAR, full project/engagement name\n"
-            "- supplier_name: VARCHAR\n"
-            "- original_amount: NUMERIC, initial quoted amount in GBP\n"
-            "- revised_amount: NUMERIC, revised amount (NULL if no revision exists)\n"
-            "- quotation_version: INTEGER, 1=original, 2+=revisions\n"
-            "- status: VARCHAR, DRAFT/SUBMITTED/APPROVED/REJECTED\n"
-            "- submission_date: DATE\n"
-            "- category: VARCHAR, IT Services/Consulting/Hardware/Facilities\n\n"
-            "CRITICAL DEMO DATA — Engagement E-205:\n"
-            "Version 1: original_amount=82000, revised_amount=NULL, status=SUBMITTED\n"
-            "Version 2: original_amount=82000, revised_amount=92180, status=APPROVED\n"
-            "Delta = (92180 - 82000) / 82000 * 100 = EXACTLY 12.4%\n"
-            "NOTE: Delta calculation is done in Python Pandas, not SQL.\n\n"
-            "SQL to fetch E-205 for delta calculation:\n"
+            "Views & Tables:\n"
+            "procurement_quotations: LEGACY VIEW joining proc_quotation_headers + proc_quote_versions + sup_suppliers\n"
+            "proc_quotation_headers: quotation_header_id PK, quotation_number, engagement_id (E-201 to E-215), "
+            "engagement_name, supplier_id FK→sup_suppliers, original_amount, revised_amount, status, category\n"
+            "proc_quotation_lines: quot_line_id PK, quotation_header_id FK, item_id FK, line details\n"
+            "proc_quote_versions: version_id PK, quotation_header_id FK, version_number, version_amount, status\n\n"
+            "CRITICAL DATA — E-205:\n"
+            "Version 1: amount=82000, status=SUBMITTED\n"
+            "Version 2: amount=92180, status=APPROVED\n"
+            "Delta = (92180-82000)/82000*100 = EXACTLY 12.4%\n"
+            "NOTE: Delta calculation done in Python Pandas, not SQL.\n\n"
+            "SQL for E-205:\n"
             "SELECT engagement_id, engagement_name, original_amount, revised_amount, quotation_version, status "
             "FROM procurement_quotations WHERE engagement_id='E-205' ORDER BY quotation_version\n\n"
-            "SQL to find all engagements with revisions:\n"
-            "SELECT engagement_id, MAX(original_amount) as original, MAX(revised_amount) as revised "
-            "FROM procurement_quotations WHERE revised_amount IS NOT NULL GROUP BY engagement_id"
+            "SQL via base tables:\n"
+            "SELECT qh.engagement_id, qh.original_amount, qv.version_number, qv.version_amount, qv.status "
+            "FROM proc_quotation_headers qh JOIN proc_quote_versions qv ON qv.quotation_header_id=qh.quotation_header_id "
+            "WHERE qh.engagement_id='E-205' ORDER BY qv.version_number"
         ),
     },
     {
         "doc_id": "procurement_po_table",
         "domain": "PROCUREMENT",
-        "title": "Procurement Purchase Orders — procurement_purchase_orders",
+        "title": "Procurement Purchase Orders — Header/Line/Distribution with 3-Way Match",
         "content": (
-            "Table: procurement_purchase_orders\n"
-            "Tracks purchase orders raised to suppliers.\n"
-            "Columns:\n"
-            "- po_id: SERIAL PRIMARY KEY\n"
-            "- po_number: VARCHAR, format PO-2025-001\n"
-            "- supplier_name: VARCHAR\n"
-            "- total_amount: NUMERIC, total PO value GBP\n"
-            "- approved_amount: NUMERIC, approved portion (may be less than total for partial approval)\n"
-            "- status: VARCHAR, PENDING/APPROVED/REJECTED/PARTIALLY_APPROVED\n"
-            "- created_date: DATE, when PO was raised\n"
-            "- approved_date: DATE, NULL if not yet approved\n"
-            "- cost_centre: VARCHAR\n"
-            "- category: VARCHAR\n\n"
-            "Days pending: CURRENT_DATE - created_date (for PENDING orders)\n\n"
-            "Example queries:\n"
-            "Q: \"Show all pending purchase orders older than 14 days\"\n"
-            "A: SELECT po_number, supplier_name, total_amount, created_date, "
-            "(CURRENT_DATE - created_date) as days_pending FROM procurement_purchase_orders "
-            "WHERE status='PENDING' AND created_date < CURRENT_DATE - INTERVAL '14 days' ORDER BY created_date ASC\n\n"
-            "Q: \"Which supplier has the highest total PO spend?\"\n"
-            "A: SELECT supplier_name, SUM(total_amount) as total_spend, COUNT(*) as po_count "
-            "FROM procurement_purchase_orders WHERE status IN ('APPROVED','PARTIALLY_APPROVED') "
-            "GROUP BY supplier_name ORDER BY total_spend DESC LIMIT 10"
+            "PO tables (Header → Line → Distribution):\n\n"
+            "procurement_purchase_orders: LEGACY VIEW on proc_po_headers\n"
+            "proc_po_headers: po_header_id PK, po_number, supplier_id FK→sup_suppliers, "
+            "buyer_id FK→hcm_persons, requisition_id FK, total_amount, approved_amount, "
+            "status (PENDING/APPROVED/REJECTED), category\n\n"
+            "proc_po_lines: po_line_id PK, po_header_id FK, item_id FK, description, quantity, "
+            "unit_price, line_amount, status\n\n"
+            "proc_po_distributions: po_dist_id PK, po_line_id FK, cost_centre_id FK→fin_cost_centres, "
+            "account_code_id FK→fin_account_codes, distribution_pct, amount\n\n"
+            "proc_po_approvals: approval_id PK, po_header_id FK, approver_id FK→hcm_persons, "
+            "approval_level, action, action_date\n\n"
+            "3-WAY MATCH: proc_po_lines ↔ proc_receipt_lines ↔ fin_ap_invoice_lines\n\n"
+            "Example: SELECT po.po_number, s.supplier_name, po.total_amount, po.status "
+            "FROM proc_po_headers po JOIN sup_suppliers s ON s.supplier_id=po.supplier_id "
+            "WHERE po.status='PENDING' ORDER BY po.created_date"
+        ),
+    },
+    {
+        "doc_id": "procurement_requisitions",
+        "domain": "PROCUREMENT",
+        "title": "Procurement Requisitions — Header/Line/Distribution",
+        "content": (
+            "Requisition tables:\n\n"
+            "proc_requisition_headers: requisition_id PK, requisition_number, "
+            "requester_id FK→hcm_persons, dept_id FK→hcm_departments, description, "
+            "total_amount, status, submitted_date, approved_by FK\n\n"
+            "proc_requisition_lines: req_line_id PK, requisition_id FK, item_id FK→proc_items, "
+            "quantity, unit_price, line_amount, need_by_date\n\n"
+            "proc_requisition_distributions: req_dist_id PK, req_line_id FK, "
+            "cost_centre_id FK→fin_cost_centres, account_code_id FK→fin_account_codes\n\n"
+            "Example: SELECT rh.requisition_number, p.first_name||' '||p.last_name as requester, "
+            "rh.total_amount, rh.status FROM proc_requisition_headers rh "
+            "JOIN hcm_persons p ON p.person_id=rh.requester_id"
+        ),
+    },
+    {
+        "doc_id": "procurement_receiving_contracts",
+        "domain": "PROCUREMENT",
+        "title": "Procurement Receiving & Contracts",
+        "content": (
+            "Receiving tables (goods receipt):\n\n"
+            "proc_receipt_headers: receipt_header_id PK, receipt_number, po_header_id FK, "
+            "received_by FK→hcm_persons, receipt_date, status\n"
+            "proc_receipt_lines: receipt_line_id PK, receipt_header_id FK, po_line_id FK, "
+            "quantity_received, quantity_accepted, quantity_rejected, inspection_status\n\n"
+            "Contract tables:\n\n"
+            "proc_contract_headers: contract_header_id PK, contract_number, supplier_id FK, "
+            "contract_type (BLANKET), start/end_date, total_value, released_amount, status\n"
+            "proc_contract_lines: contract_line_id PK, contract_header_id FK, item_id FK, "
+            "quantity, unit_price, line_amount, released_amount\n\n"
+            "proc_item_categories: category_id PK, category_code, parent_category_id (self-ref hierarchy)\n"
+            "proc_items: item_id PK, item_code, item_name, category_id FK, unit_price, item_type\n\n"
+            "Example: SELECT ch.contract_number, s.supplier_name, ch.total_value, "
+            "ch.released_amount, (ch.total_value-ch.released_amount) as remaining "
+            "FROM proc_contract_headers ch JOIN sup_suppliers s ON s.supplier_id=ch.supplier_id"
+        ),
+    },
+
+    # ================================================================
+    # CROSS-DOMAIN DOCUMENTATION
+    # ================================================================
+    {
+        "doc_id": "cross_domain_links",
+        "domain": "ALL",
+        "title": "Cross-Domain Foreign Key Links",
+        "content": (
+            "Cross-domain FK relationships in this Oracle Fusion schema:\n\n"
+            "HCM → Finance:\n"
+            "- hcm_cost_allocations.cost_centre_id → fin_cost_centres\n"
+            "- hcm_payroll_results.account_code_id → fin_account_codes\n"
+            "- fin_cost_centres.dept_id → hcm_departments\n"
+            "- fin_cost_centres.manager_person_id → hcm_persons\n\n"
+            "Procurement → Finance:\n"
+            "- proc_po_distributions.cost_centre_id → fin_cost_centres\n"
+            "- proc_po_distributions.account_code_id → fin_account_codes\n"
+            "- proc_requisition_distributions.cost_centre_id → fin_cost_centres\n"
+            "- fin_ap_invoice_lines.po_line_id → proc_po_lines (3-WAY MATCH)\n\n"
+            "Procurement → HCM:\n"
+            "- proc_requisition_headers.requester_id → hcm_persons\n"
+            "- proc_po_headers.buyer_id → hcm_persons\n\n"
+            "Unified Supplier (shared by Finance & Procurement):\n"
+            "- fin_ap_invoices.supplier_id → sup_suppliers\n"
+            "- proc_po_headers.supplier_id → sup_suppliers\n"
+            "- proc_quotation_headers.supplier_id → sup_suppliers\n"
+            "- proc_contract_headers.supplier_id → sup_suppliers"
         ),
     },
 ]

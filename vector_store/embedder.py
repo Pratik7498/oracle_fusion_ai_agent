@@ -1,22 +1,28 @@
 """Embed schema documentation into PostgreSQL via PGVector.
 
-Switched from OpenAI text-embedding-3-large to HuggingFace BAAI/bge-base-en-v1.5.
+Uses local sentence-transformers model BAAI/bge-base-en-v1.5 (768 dimensions).
 """
 
+import time
 import numpy as np
 import psycopg2
 from pgvector.psycopg2 import register_vector
-# from openai import OpenAI  # commented out -- switched to HuggingFace
-from langchain_huggingface import HuggingFaceEndpointEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from config.settings import get_settings
 from vector_store.schema_docs import SCHEMA_DOCS
 
 
-def get_embedding(text: str, embeddings_model: HuggingFaceEndpointEmbeddings) -> list[float]:
-    """Get BGE-base-en-v1.5 embedding for a text string via HuggingFace Inference API."""
-    # OpenAI version (commented out):
-    # response = client.embeddings.create(input=[text], model="text-embedding-3-large")
-    # return response.data[0].embedding
+def get_embeddings_model() -> HuggingFaceEmbeddings:
+    """Get the BGE-base-en-v1.5 embeddings model (locally downloaded)."""
+    return HuggingFaceEmbeddings(
+        model_name="BAAI/bge-base-en-v1.5",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+
+
+def get_embedding(text: str, embeddings_model: HuggingFaceEmbeddings) -> list[float]:
+    """Get embedding for a text string."""
     return embeddings_model.embed_query(text)
 
 
@@ -26,13 +32,7 @@ def embed_all_schema_docs() -> None:
     Idempotent -- skips docs that already exist by doc_id.
     """
     settings = get_settings()
-    # OpenAI client (commented out):
-    # client = OpenAI(api_key=settings.openai_api_key)
-
-    embeddings_model = HuggingFaceEndpointEmbeddings(
-        model="BAAI/bge-base-en-v1.5",
-        huggingfacehub_api_token=settings.huggingface_api_key,
-    )
+    embeddings_model = get_embeddings_model()
 
     conn = psycopg2.connect(settings.postgres_url)
     register_vector(conn)
@@ -48,7 +48,11 @@ def embed_all_schema_docs() -> None:
             continue
 
         print(f"  Embedding: {doc['title']}")
-        embedding = get_embedding(doc["content"], embeddings_model)
+        try:
+            embedding = get_embedding(doc["content"], embeddings_model)
+        except Exception as emb_err:
+            print(f"    [FAIL] Could not embed {doc['doc_id']}: {emb_err}")
+            continue
         embedding_array = np.array(embedding, dtype=np.float32)
 
         cursor.execute(

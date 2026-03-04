@@ -14,7 +14,7 @@ from backend.analytics.calculations import (
     calculate_attrition_rate,
     calculate_headcount_summary,
 )
-from backend.analytics.chart_builder import build_bar_chart
+from backend.analytics.chart_builder import build_bar_chart, auto_chart, wants_chart
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +44,14 @@ def hcm_query_tool(query: str) -> str:
         query_lower = query.lower()
         metrics: dict = {}
         chart_data = None
+        _wants_vis = wants_chart(query)
 
         if any(w in query_lower for w in ["attrition", "turnover", "leaving", "left"]):
             period_start = date.today() - timedelta(days=365)
             period_end = date.today()
             metrics = calculate_attrition_rate(df, period_start, period_end)
 
-        if any(w in query_lower for w in ["headcount", "how many", "count", "number of"]):
+        if _wants_vis and any(w in query_lower for w in ["headcount", "how many", "count", "number of"]):
             cols_lower = [c.lower() for c in df.columns]
             if "department" in cols_lower and any("count" in c or "headcount" in c for c in cols_lower):
                 chart_data = build_bar_chart(
@@ -59,6 +60,10 @@ def hcm_query_tool(query: str) -> str:
                     x_label="Department",
                     y_label="Headcount",
                 )
+
+        # Fallback: auto-generate chart ONLY if user asked for a visual
+        if chart_data is None and _wants_vis:
+            chart_data = auto_chart(df, query)
 
         return json.dumps(
             {

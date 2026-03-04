@@ -72,7 +72,13 @@ class OracleFusionAgent:
             "4. If the tool returns chart_data or metrics, acknowledge them in your answer\n"
             "5. Keep answers professional and to the point -- max 4 sentences for simple queries\n"
             "6. If a query spans multiple domains, use multiple tools\n"
-            "7. Never reveal raw SQL to the user unless they ask -- the UI shows it separately"
+            "7. Never reveal raw SQL to the user unless they ask -- the UI shows it separately\n"
+            "8. You MUST ONLY answer questions about Oracle Fusion ERP data (HCM, Finance, Procurement). "
+            "If a question is about general knowledge, internet search, weather, news, coding help, "
+            "or anything NOT related to the ERP database, politely decline and explain that you can "
+            "only assist with ERP-related queries.\n"
+            "9. NEVER answer from your general knowledge. ALL answers MUST come from tool results. "
+            "If no tool can answer the question, say so."
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -90,7 +96,8 @@ class OracleFusionAgent:
             tools=self.tools,
             verbose=True,
             handle_parsing_errors=True,
-            max_iterations=3,
+            max_iterations=5,
+            return_intermediate_steps=True,
         )
 
     def _get_memory(self, session_id: str) -> ConversationBufferWindowMemory:
@@ -107,7 +114,7 @@ class OracleFusionAgent:
         start_time = time.time()
         memory = self._get_memory(session_id)
 
-        # Classify intent first
+        # Classify intent first (keyword-based, ~0ms)
         intent = classify_intent(query)
         domain = intent.get("domain", "CROSS_DOMAIN")
         query_type = intent.get("query_type", "lookup")
@@ -117,33 +124,108 @@ class OracleFusionAgent:
         metrics = None
         row_count = 0
 
-        try:
-            result = self.agent_executor.invoke(
-                {
-                    "input": query,
-                    "chat_history": memory.chat_memory.messages,
-                }
+        # ── Guard: block out-of-scope queries ──
+        if domain == "OUT_OF_SCOPE":
+            execution_time = int((time.time() - start_time) * 1000)
+            out_of_scope_msg = (
+                "I'm designed to assist only with **Oracle Fusion ERP data** — "
+                "including HCM (employees, payroll, performance), Finance (GL, AP, AR, budgets), "
+                "and Procurement (POs, requisitions, suppliers, contracts).\n\n"
+                "Your question appears to be outside this scope. "
+                "Please ask something related to the ERP database and I'll be happy to help! 🔮"
+            )
+            return AgentResponse(
+                answer=out_of_scope_msg,
+                domain="OUT_OF_SCOPE",
+                query_type=query_type,
+                sql_used="",
+                chart_data=None,
+                metrics=None,
+                execution_time_ms=execution_time,
+                row_count=0,
             )
 
-            answer = result.get("output", "I could not generate a response.")
+        # ── Map domain → tool for direct-call path ──
+        _TOOL_MAP = {
+            "HCM": hcm_query_tool,
+            "FINANCE": finance_query_tool,
+            "PROCUREMENT": procurement_query_tool,
+        }
 
-            # Extract structured data from tool outputs if available
-            for step in result.get("intermediate_steps", []):
-                if len(step) >= 2:
-                    tool_output = step[1]
-                    if isinstance(tool_output, str):
-                        try:
-                            tool_data = json.loads(tool_output)
-                            if tool_data.get("sql_used"):
-                                sql_used = tool_data["sql_used"]
-                            if tool_data.get("chart_data"):
-                                chart_data = tool_data["chart_data"]
-                            if tool_data.get("metrics"):
-                                metrics = tool_data["metrics"]
-                            if "row_count" in tool_data:
-                                row_count = tool_data["row_count"]
-                        except json.JSONDecodeError:
-                            pass
+        try:
+            # ── FAST PATH: single-domain → call tool directly, skip agent ──
+            if domain in _TOOL_MAP:
+                tool_fn = _TOOL_MAP[domain]
+                raw_output = tool_fn.invoke(query)
+
+                # Parse tool output
+                try:
+                    tool_data = json.loads(raw_output)
+                except (json.JSONDecodeError, TypeError):
+                    tool_data = {}
+
+                sql_used = tool_data.get("sql_used", "")
+                chart_data = tool_data.get("chart_data")
+                metrics = tool_data.get("metrics")
+                row_count = tool_data.get("row_count", 0)
+                data_rows = tool_data.get("data", [])
+                error_msg = tool_data.get("error")
+
+                if error_msg:
+                    raise ValueError(error_msg)
+
+                # Format answer with a single LLM call
+                data_preview = str(data_rows[:15]) if data_rows else "No data"
+                metrics_str = json.dumps(metrics, default=str) if metrics else "None"
+
+                format_prompt = (
+                    f"User asked: {query}\n\n"
+                    f"Data returned ({row_count} rows, first 15 shown):\n{data_preview}\n\n"
+                    f"Metrics: {metrics_str}\n\n"
+                    f"Give a clear, concise business-focused answer. "
+                    f"Highlight key numbers prominently. Max 4 sentences for simple queries. "
+                    f"Do NOT reveal SQL. Do NOT make up data — only use what is shown above."
+                )
+
+                llm_response = self.llm.invoke(format_prompt)
+                answer = llm_response.content
+
+            # ── FULL PATH: cross-domain → use agent executor (needs tool selection) ──
+            else:
+                result = self.agent_executor.invoke(
+                    {
+                        "input": query,
+                        "chat_history": memory.chat_memory.messages,
+                    }
+                )
+
+                answer = result.get("output", "I could not generate a response.")
+
+                # Extract structured data from tool outputs
+                for step in result.get("intermediate_steps", []):
+                    if len(step) >= 2:
+                        tool_output = step[1]
+                        raw_str = None
+                        if isinstance(tool_output, str):
+                            raw_str = tool_output
+                        elif hasattr(tool_output, "content"):
+                            raw_str = tool_output.content
+                        elif hasattr(tool_output, "__str__"):
+                            raw_str = str(tool_output)
+
+                        if raw_str:
+                            try:
+                                tool_data = json.loads(raw_str)
+                                if tool_data.get("sql_used"):
+                                    sql_used = tool_data["sql_used"]
+                                if tool_data.get("chart_data"):
+                                    chart_data = tool_data["chart_data"]
+                                if tool_data.get("metrics"):
+                                    metrics = tool_data["metrics"]
+                                if "row_count" in tool_data:
+                                    row_count = tool_data["row_count"]
+                            except (json.JSONDecodeError, TypeError):
+                                pass
 
             # Update memory
             memory.chat_memory.add_user_message(query)
@@ -181,3 +263,4 @@ class OracleFusionAgent:
                 execution_time_ms=execution_time,
                 error=str(e),
             )
+

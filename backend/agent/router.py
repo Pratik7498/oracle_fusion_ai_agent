@@ -1,83 +1,122 @@
-"""Intent classification using Groq (Llama 3.3 70B).
+"""Fast keyword-based intent classification — no LLM call needed.
 
-Switched from OpenAI GPT-4o to Groq Llama 3.3 70B Versatile.
+Replaces the previous Groq-based router to save ~3-5 seconds per query.
 """
 
-import json
 import logging
-# from openai import OpenAI  # commented out -- switched to Groq
-from groq import Groq
-from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = """You are an intent classifier for an Oracle Fusion ERP AI agent. Analyse the user query and classify it.
+# ── Keyword sets for domain classification ──
+_HCM_KEYWORDS = {
+    "employee", "employees", "headcount", "attrition", "turnover", "salary",
+    "salaries", "grade", "grades", "department", "departments", "hr",
+    "human resource", "workforce", "payroll", "compensation", "promotion",
+    "promotions", "transfer", "transfers", "training", "performance review",
+    "performance", "absence", "leave", "hire", "hiring", "person",
+    "worker", "workers", "people", "staff", "designation", "job",
+    "hcm", "termination", "terminated", "resigned", "joining",
+}
 
-Domains:
-- HCM: employee headcount, attrition rate, salary analysis, grade distribution, HR metrics, workforce data
-- FINANCE: GL balances, budget vs actual, AP invoices, payment aging, cost centre variance, spend analysis
-- PROCUREMENT: purchase orders, supplier quotations, engagement deltas, PO approval status, supplier spend
-- CROSS_DOMAIN: queries spanning multiple domains
+_FINANCE_KEYWORDS = {
+    "budget", "actual", "variance", "gl", "general ledger", "journal",
+    "ap invoice", "ap invoices", "accounts payable", "payment", "payments",
+    "aging", "overdue", "cost centre", "cost center", "finance",
+    "financial", "ledger", "ar invoice", "ar invoices", "accounts receivable",
+    "receipt", "receipts", "balance", "balances", "invoice", "invoices",
+    "spend", "expenditure", "revenue", "outstanding", "paid", "unpaid",
+    "fiscal", "fy", "quarter",
+}
 
-Query types:
-- lookup: retrieve specific record(s)
-- aggregation: count, sum, average, group by
-- delta: calculate change/difference between two values (e.g. original vs revised quotation)
-- trend: change over time periods
+_PROCUREMENT_KEYWORDS = {
+    "purchase order", "po ", "pos ", "procurement", "supplier", "suppliers",
+    "quotation", "quotations", "requisition", "requisitions", "contract",
+    "contracts", "engagement", "delta", "revised", "goods receipt",
+    "item catalog", "catalog", "tender", "bid", "rfq", "vendor",
+    "vendors", "sourcing", "award",
+}
 
-Respond in valid JSON ONLY, no other text:
-{
-  "domain": "HCM|FINANCE|PROCUREMENT|CROSS_DOMAIN",
-  "query_type": "lookup|aggregation|delta|trend",
-  "needs_calculation": true|false,
-  "calculation_type": "attrition_rate|delta|budget_variance|ap_aging|headcount|none",
-  "confidence": 0.0-1.0
-}"""
+_OUT_OF_SCOPE_KEYWORDS = {
+    "weather", "news", "coding", "python tutorial", "recipe", "movie",
+    "sports", "politics", "stock market", "crypto", "bitcoin",
+    "write code", "help me code", "translate", "wikipedia",
+    "who is", "what is the capital", "how to cook",
+}
 
-_DEFAULT_INTENT: dict = {
-    "domain": "CROSS_DOMAIN",
-    "query_type": "lookup",
-    "needs_calculation": False,
-    "calculation_type": "none",
-    "confidence": 0.5,
+_QUERY_TYPE_KEYWORDS = {
+    "aggregation": ["count", "total", "sum", "average", "avg", "how many", "group by", "top", "highest", "lowest", "max", "min"],
+    "delta": ["delta", "difference", "change", "revised", "variance", "vs", "versus", "compared"],
+    "trend": ["trend", "over time", "monthly", "quarterly", "yearly", "by month", "by quarter", "by year", "growth"],
+}
+
+_CALC_KEYWORDS = {
+    "attrition_rate": ["attrition", "turnover"],
+    "delta": ["delta", "revised", "change"],
+    "budget_variance": ["budget", "variance", "over budget"],
+    "ap_aging": ["aging", "overdue"],
+    "headcount": ["headcount", "how many employees", "employee count"],
 }
 
 
 def classify_intent(query: str) -> dict:
     """Classify user query into domain, query_type, and calculation needs.
 
-    Returns a safe default on any failure.
+    Uses fast keyword matching instead of an LLM call (~0ms vs ~3-5s).
     """
-    try:
-        settings = get_settings()
-        # OpenAI version (commented out):
-        # client = OpenAI(api_key=settings.openai_api_key)
-        client = Groq(api_key=settings.groq_api_key)
+    q = query.lower()
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",  # was "gpt-4o"
-            temperature=0,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": query},
-            ],
-            max_tokens=200,
-        )
+    # ── Check out-of-scope first ──
+    if any(kw in q for kw in _OUT_OF_SCOPE_KEYWORDS):
+        return {
+            "domain": "OUT_OF_SCOPE",
+            "query_type": "lookup",
+            "needs_calculation": False,
+            "calculation_type": "none",
+            "confidence": 0.9,
+        }
 
-        raw = response.choices[0].message.content.strip()
-        # Strip markdown fences if the model wraps output
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            if raw.endswith("```"):
-                raw = raw[:-3]
-            raw = raw.strip()
+    # ── Score each domain ──
+    hcm_score = sum(1 for kw in _HCM_KEYWORDS if kw in q)
+    fin_score = sum(1 for kw in _FINANCE_KEYWORDS if kw in q)
+    proc_score = sum(1 for kw in _PROCUREMENT_KEYWORDS if kw in q)
 
-        intent = json.loads(raw)
-        # Ensure all keys exist
-        for key in _DEFAULT_INTENT:
-            intent.setdefault(key, _DEFAULT_INTENT[key])
-        return intent
+    scores = {"HCM": hcm_score, "FINANCE": fin_score, "PROCUREMENT": proc_score}
+    max_score = max(scores.values())
 
-    except (json.JSONDecodeError, Exception) as exc:
-        logger.warning("Intent classification failed (%s), using default.", exc)
-        return dict(_DEFAULT_INTENT)
+    if max_score == 0:
+        domain = "CROSS_DOMAIN"
+        confidence = 0.4
+    else:
+        # Check if multiple domains scored equally high
+        top_domains = [d for d, s in scores.items() if s == max_score]
+        if len(top_domains) > 1:
+            domain = "CROSS_DOMAIN"
+            confidence = 0.6
+        else:
+            domain = top_domains[0]
+            confidence = min(0.95, 0.5 + max_score * 0.1)
+
+    # ── Determine query type ──
+    query_type = "lookup"
+    for qt, keywords in _QUERY_TYPE_KEYWORDS.items():
+        if any(kw in q for kw in keywords):
+            query_type = qt
+            break
+
+    # ── Determine calculation type ──
+    calc_type = "none"
+    needs_calc = False
+    for ct, keywords in _CALC_KEYWORDS.items():
+        if any(kw in q for kw in keywords):
+            calc_type = ct
+            needs_calc = True
+            break
+
+    return {
+        "domain": domain,
+        "query_type": query_type,
+        "needs_calculation": needs_calc,
+        "calculation_type": calc_type,
+        "confidence": confidence,
+    }
+

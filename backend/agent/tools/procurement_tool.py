@@ -10,7 +10,7 @@ from vector_store.retriever import retrieve_schema_context
 from backend.agent.sql_generator import generate_sql
 from backend.db.connection import execute_query
 from backend.analytics.calculations import calculate_delta
-from backend.analytics.chart_builder import build_delta_chart, build_bar_chart
+from backend.analytics.chart_builder import build_delta_chart, build_bar_chart, auto_chart, wants_chart
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ def procurement_query_tool(query: str) -> str:
         query_lower = query.lower()
         metrics: dict = {}
         chart_data = None
+        _wants_vis = wants_chart(query)
 
         # Delta / revision detection
         if any(w in query_lower for w in ["delta", "revised", "change", "e-205", "e205"]):
@@ -48,11 +49,12 @@ def procurement_query_tool(query: str) -> str:
                     engagement_label = str(
                         row.get("engagement_id", row.get("engagement_name", "Engagement"))
                     )
-                    chart_data = build_delta_chart(original, revised, engagement_label)
+                    if _wants_vis:
+                        chart_data = build_delta_chart(original, revised, engagement_label)
 
         # Pending POs
         if any(w in query_lower for w in ["pending", "purchase order", "po"]):
-            if "status" in df.columns:
+            if "status" in df.columns and _wants_vis:
                 status_counts = df["status"].value_counts().to_dict()
                 if len(status_counts) > 1 or "PENDING" not in status_counts:
                     chart_data = chart_data or build_bar_chart(
@@ -61,6 +63,10 @@ def procurement_query_tool(query: str) -> str:
                         x_label="Status",
                         y_label="Count",
                     )
+
+        # Fallback: auto-generate chart ONLY if user asked for a visual
+        if chart_data is None and _wants_vis:
+            chart_data = auto_chart(df, query)
 
         return json.dumps(
             {

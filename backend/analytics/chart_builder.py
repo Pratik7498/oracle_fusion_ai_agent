@@ -4,6 +4,20 @@ import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 
+# ── Keywords that indicate the user wants a chart ──
+_CHART_KEYWORDS = {
+    "chart", "graph", "plot", "visualize", "visualise", "visual",
+    "diagram", "bar", "pie", "line chart", "trend", "breakdown",
+    "distribution", "histogram", "show chart", "display chart",
+    "draw", "compare visually",
+}
+
+
+def wants_chart(query: str) -> bool:
+    """Return True if the query explicitly asks for a chart/visual."""
+    q = query.lower()
+    return any(kw in q for kw in _CHART_KEYWORDS)
+
 # ── Dark theme constants ──
 DARK_BG = "rgba(16, 28, 46, 0.95)"
 GRID_COLOR = "#1E2D45"
@@ -136,3 +150,127 @@ def build_aging_chart(aging_data: dict, title: str) -> dict:
     )
     fig = _apply_defaults(fig, title)
     return fig.to_dict()
+
+
+def auto_chart(df: pd.DataFrame, query: str) -> dict | None:
+    """Smart auto-chart: pick the best chart type based on DataFrame shape and query.
+
+    Returns a Plotly figure dict or None if the data isn't suited for a chart.
+    """
+    if df is None or df.empty or len(df) < 2:
+        return None
+
+    query_lower = query.lower()
+    cols = list(df.columns)
+    n_cols = len(cols)
+    n_rows = len(df)
+
+    # Identify column types
+    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    text_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+
+    if not numeric_cols:
+        return None  # nothing to chart
+
+    # ── Heuristic 1: Category + single numeric = bar chart ──
+    if len(text_cols) >= 1 and len(numeric_cols) >= 1:
+        label_col = text_cols[0]
+        value_col = numeric_cols[0]
+
+        labels = df[label_col].astype(str).tolist()[:20]  # cap at 20
+        values = df[value_col].tolist()[:20]
+
+        # Pick chart title from column names
+        title = f"{value_col.replace('_', ' ').title()} by {label_col.replace('_', ' ').title()}"
+
+        # Check if pie chart makes sense (proportion/distribution, small categories, query mentions distribution/breakdown)
+        use_pie = (
+            n_rows <= 10
+            and all(v >= 0 for v in values if v is not None)
+            and any(w in query_lower for w in ["distribution", "breakdown", "proportion", "split", "share", "pie"])
+        )
+
+        if use_pie:
+            fig = go.Figure(
+                data=[go.Pie(
+                    labels=labels,
+                    values=values,
+                    hole=0.4,
+                    marker=dict(colors=px.colors.qualitative.Set2),
+                    textinfo="label+percent",
+                    textposition="outside",
+                )]
+            )
+            fig = _apply_defaults(fig, title)
+            return fig.to_dict()
+
+        # Check if we have 2+ numeric cols (grouped bar)
+        if len(numeric_cols) >= 2 and len(text_cols) >= 1:
+            fig = go.Figure()
+            bar_colors = ["#3B82F6", "#22C55E", "#F59E0B", "#EF4444", "#8B5CF6"]
+            for i, nc in enumerate(numeric_cols[:4]):
+                fig.add_trace(go.Bar(
+                    name=nc.replace("_", " ").title(),
+                    x=labels,
+                    y=df[nc].tolist()[:20],
+                    marker_color=bar_colors[i % len(bar_colors)],
+                ))
+            fig = _apply_defaults(fig, title)
+            fig.update_layout(barmode="group")
+            return fig.to_dict()
+
+        # Check if time-series (period_name, date, month, quarter in label col)
+        is_time = any(t in label_col.lower() for t in ["period", "date", "month", "quarter", "year"])
+        if is_time and n_rows >= 3:
+            fig = go.Figure(
+                data=[go.Scatter(
+                    x=labels,
+                    y=values,
+                    mode="lines+markers",
+                    line=dict(color="#3B82F6", width=2),
+                    marker=dict(size=6, color="#22C55E"),
+                    fill="tozeroy",
+                    fillcolor="rgba(59, 130, 246, 0.1)",
+                )]
+            )
+            fig = _apply_defaults(fig, title)
+            fig.update_xaxes(title_text=label_col.replace("_", " ").title())
+            fig.update_yaxes(title_text=value_col.replace("_", " ").title())
+            return fig.to_dict()
+
+        # Default: bar chart
+        # Color bars based on sign (positive=green, negative=red) if variance-like
+        is_variance = any(w in value_col.lower() for w in ["variance", "diff", "delta", "pct"])
+        if is_variance:
+            colors = ["#EF4444" if v > 0 else "#22C55E" for v in values]
+        else:
+            colors = "#3B82F6"
+
+        fig = go.Figure(
+            data=[go.Bar(
+                x=labels,
+                y=values,
+                marker_color=colors,
+                text=[f"{v:,.1f}" if isinstance(v, float) else str(v) for v in values],
+                textposition="outside",
+            )]
+        )
+        fig = _apply_defaults(fig, title)
+        fig.update_xaxes(title_text=label_col.replace("_", " ").title())
+        fig.update_yaxes(title_text=value_col.replace("_", " ").title())
+        return fig.to_dict()
+
+    # ── Heuristic 2: All numeric, small rows = horizontal bar ──
+    if len(numeric_cols) >= 1 and not text_cols and n_rows <= 10:
+        fig = go.Figure(
+            data=[go.Bar(
+                y=[str(i) for i in df.index],
+                x=df[numeric_cols[0]].tolist(),
+                orientation="h",
+                marker_color="#3B82F6",
+            )]
+        )
+        fig = _apply_defaults(fig, numeric_cols[0].replace("_", " ").title())
+        return fig.to_dict()
+
+    return None

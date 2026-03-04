@@ -55,7 +55,7 @@ def main() -> None:
     try:
         sql = _read_sql("schema.sql")
         cursor.execute(sql)
-        print("  [OK] All 6 tables created")
+        print("  [OK] All 63 tables + 3 views created")
     except psycopg2.errors.DuplicateTable:
         conn.rollback()
         conn.autocommit = True
@@ -68,10 +68,10 @@ def main() -> None:
     # Step 3 — Seed data
     print("\n[3/6] Inserting seed data …")
     try:
-        cursor.execute("SELECT COUNT(*) FROM hcm_employees")
+        cursor.execute("SELECT COUNT(*) FROM hcm_persons")
         count = cursor.fetchone()[0]
         if count > 0:
-            print(f"  [WARN] hcm_employees already has {count} rows -- skipping seed")
+            print(f"  [WARN] hcm_persons already has {count} rows -- skipping seed")
         else:
             sql = _read_sql("seed_data.sql")
             cursor.execute(sql)
@@ -83,25 +83,32 @@ def main() -> None:
 
     # Step 4 — Embed schema docs (in-memory, saved to JSON)
     print("\n[4/6] Embedding schema docs (local cache) …")
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
-    if openai_key and not openai_key.startswith("sk-PASTE"):
+    hf_key = os.environ.get("HUGGINGFACE_API_KEY", "")
+    if hf_key and not hf_key.startswith("hf_PASTE"):
         try:
             from vector_store.embedder import embed_all_schema_docs
             embed_all_schema_docs()
             print("  [OK] Schema embeddings cached locally")
         except Exception as e:
             print(f"  [WARN] Embedding skipped (non-fatal): {e}")
-            print("      Set OPENAI_API_KEY in .env to enable RAG retrieval")
+            print("      Set HUGGINGFACE_API_KEY in .env to enable RAG retrieval")
     else:
-        print("  [WARN] Skipped -- set OPENAI_API_KEY in .env to enable embeddings")
+        print("  [WARN] Skipped -- set HUGGINGFACE_API_KEY in .env to enable embeddings")
         print("      The app will still work using keyword-based schema matching")
 
     # Step 5 — Verify data counts
     print("\n[5/6] Verifying data …")
     tables = [
+        "hcm_persons",
+        "hcm_assignments",
+        "hcm_departments",
         "hcm_employees",
-        "finance_gl_balances",
-        "finance_ap_invoices",
+        "sup_suppliers",
+        "fin_gl_balances",
+        "fin_ap_invoices",
+        "fin_ar_customers",
+        "proc_po_headers",
+        "proc_quotation_headers",
         "procurement_quotations",
         "procurement_purchase_orders",
     ]

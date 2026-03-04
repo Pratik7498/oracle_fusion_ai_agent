@@ -6,13 +6,31 @@ Switched from OpenAI text-embedding-3-large to HuggingFace BAAI/bge-base-en-v1.5
 import numpy as np
 import psycopg2
 from pgvector.psycopg2 import register_vector
-# from openai import OpenAI  # commented out -- switched to HuggingFace
-from langchain_huggingface import HuggingFaceEndpointEmbeddings
+from vector_store.embedder import get_embeddings_model
 from config.settings import get_settings
 
 # BGE models require this prefix for retrieval queries
 _BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
+# Module-level caching for speed
+_cached_model = None
+_cached_conn = None
+
+
+def _get_model():
+    global _cached_model
+    if _cached_model is None:
+        _cached_model = get_embeddings_model()
+    return _cached_model
+
+
+def _get_conn():
+    global _cached_conn
+    settings = get_settings()
+    if _cached_conn is None or _cached_conn.closed:
+        _cached_conn = psycopg2.connect(settings.postgres_url)
+        register_vector(_cached_conn)
+    return _cached_conn
 
 def retrieve_schema_context(
     query: str, domain: str, top_k: int = 3
@@ -34,8 +52,7 @@ def retrieve_schema_context(
 
     # Check if schema_embeddings has data
     try:
-        conn = psycopg2.connect(settings.postgres_url)
-        register_vector(conn)
+        conn = _get_conn()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM schema_embeddings")
         count = cursor.fetchone()[0]
@@ -44,7 +61,7 @@ def retrieve_schema_context(
         from vector_store.schema_docs import SCHEMA_DOCS
         results = []
         for doc in SCHEMA_DOCS:
-            if domain == "CROSS_DOMAIN" or doc["domain"] == domain:
+            if domain == "CROSS_DOMAIN" or doc["domain"] == domain or doc["domain"] == "ALL":
                 results.append({
                     "title": doc["title"],
                     "content": doc["content"],
@@ -56,11 +73,10 @@ def retrieve_schema_context(
     # Fallback if no embeddings stored yet
     if count == 0:
         cursor.close()
-        conn.close()
         from vector_store.schema_docs import SCHEMA_DOCS
         results = []
         for doc in SCHEMA_DOCS:
-            if domain == "CROSS_DOMAIN" or doc["domain"] == domain:
+            if domain == "CROSS_DOMAIN" or doc["domain"] == domain or doc["domain"] == "ALL":
                 results.append({
                     "title": doc["title"],
                     "content": doc["content"],
@@ -69,16 +85,8 @@ def retrieve_schema_context(
                 })
         return results[:top_k]
 
-    # Embed the query using HuggingFace BGE with query prefix
-    # OpenAI version (commented out):
-    # client = OpenAI(api_key=settings.openai_api_key)
-    # response = client.embeddings.create(input=[query], model="text-embedding-3-large")
-    # query_embedding = np.array(response.data[0].embedding, dtype=np.float32)
-
-    embeddings_model = HuggingFaceEndpointEmbeddings(
-        model="BAAI/bge-base-en-v1.5",
-        huggingfacehub_api_token=settings.huggingface_api_key,
-    )
+    # Embed the query using local BGE model with query prefix
+    embeddings_model = _get_model()
     prefixed_query = _BGE_QUERY_PREFIX + query
     raw_embedding = embeddings_model.embed_query(prefixed_query)
     query_embedding = np.array(raw_embedding, dtype=np.float32)
@@ -105,7 +113,6 @@ def retrieve_schema_context(
 
     rows = cursor.fetchall()
     cursor.close()
-    conn.close()
 
     return [
         {
