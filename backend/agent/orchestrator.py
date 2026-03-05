@@ -1,6 +1,6 @@
-"""LangChain agent orchestrator -- ties tools, memory, and Llama 3.3 70B together.
+"""Orchestrator — ties tools, memory, and Llama 3.1 8B together.
 
-Switched from OpenAI GPT-4o (ChatOpenAI) to Groq Llama 3.3 70B (ChatGroq).
+Switched from Groq Llama 3.3 70B to 3.1 8B Instant for speed.
 """
 
 from dataclasses import dataclass, field
@@ -11,13 +11,13 @@ import logging
 
 # from langchain_openai import ChatOpenAI  # commented out -- switched to Groq
 from langchain_groq import ChatGroq
-from langchain.agents import create_openai_tools_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate
 from langchain.memory import ConversationBufferWindowMemory
 
 from backend.agent.tools.hcm_tool import hcm_query_tool
 from backend.agent.tools.finance_tool import finance_query_tool
 from backend.agent.tools.procurement_tool import procurement_query_tool
+from backend.agent.tools.cross_domain_tool import cross_domain_query_tool
 from backend.agent.router import classify_intent
 from backend.db.connection import log_query
 from config.settings import get_settings
@@ -37,6 +37,7 @@ class AgentResponse:
     metrics: Optional[dict]
     execution_time_ms: int
     row_count: int = 0
+    data: Optional[list] = None
     error: Optional[str] = None
 
 
@@ -52,52 +53,21 @@ class OracleFusionAgent:
         #     api_key=settings.openai_api_key,
         # )
         self.llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",  # 8b for speed (~1-2s vs ~8-12s for 70b)
             temperature=0,
             groq_api_key=settings.groq_api_key,
         )
-        self.tools = [hcm_query_tool, finance_query_tool, procurement_query_tool]
         self.memories: dict[str, ConversationBufferWindowMemory] = {}
 
         self.system_prompt = (
             "You are an intelligent AI assistant for Oracle Fusion ERP data.\n"
-            "You have access to three tools that query real database tables:\n"
-            "- hcm_query_tool: for HR, headcount, attrition, salary, employee data\n"
-            "- finance_query_tool: for GL balances, budget vs actual, AP invoices, payment aging\n"
-            "- procurement_query_tool: for purchase orders, quotations, supplier spend, engagement deltas\n\n"
             "Rules:\n"
-            "1. ALWAYS use the appropriate tool to fetch real data -- never make up numbers\n"
-            "2. After getting tool results, provide a clear, concise business-focused answer\n"
-            "3. Highlight key numbers prominently (e.g. \"47 employees\", \"+12.4% delta\")\n"
-            "4. If the tool returns chart_data or metrics, acknowledge them in your answer\n"
-            "5. Keep answers professional and to the point -- max 4 sentences for simple queries\n"
-            "6. If a query spans multiple domains, use multiple tools\n"
-            "7. Never reveal raw SQL to the user unless they ask -- the UI shows it separately\n"
-            "8. You MUST ONLY answer questions about Oracle Fusion ERP data (HCM, Finance, Procurement). "
-            "If a question is about general knowledge, internet search, weather, news, coding help, "
-            "or anything NOT related to the ERP database, politely decline and explain that you can "
-            "only assist with ERP-related queries.\n"
-            "9. NEVER answer from your general knowledge. ALL answers MUST come from tool results. "
-            "If no tool can answer the question, say so."
-        )
-
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", self.system_prompt),
-                MessagesPlaceholder(variable_name="chat_history"),
-                ("human", "{input}"),
-                MessagesPlaceholder(variable_name="agent_scratchpad"),
-            ]
-        )
-
-        agent = create_openai_tools_agent(self.llm, self.tools, prompt)
-        self.agent_executor = AgentExecutor(
-            agent=agent,
-            tools=self.tools,
-            verbose=True,
-            handle_parsing_errors=True,
-            max_iterations=5,
-            return_intermediate_steps=True,
+            "1. Provide a clear, concise business-focused answer from the data provided\n"
+            "2. Highlight key numbers prominently (e.g. \"47 employees\", \"+12.4% delta\")\n"
+            "3. Keep answers professional and to the point -- max 4 sentences for simple queries\n"
+            "4. Never reveal raw SQL to the user unless they ask\n"
+            "5. You MUST ONLY answer questions about Oracle Fusion ERP data.\n"
+            "6. NEVER answer from your general knowledge. ALL answers MUST come from tool results."
         )
 
     def _get_memory(self, session_id: str) -> ConversationBufferWindowMemory:
@@ -150,12 +120,14 @@ class OracleFusionAgent:
             "HCM": hcm_query_tool,
             "FINANCE": finance_query_tool,
             "PROCUREMENT": procurement_query_tool,
+            "CROSS_DOMAIN": cross_domain_query_tool,  # single tool with full multi-domain schema
         }
 
         try:
             # ── FAST PATH: single-domain → call tool directly, skip agent ──
             if domain in _TOOL_MAP:
                 tool_fn = _TOOL_MAP[domain]
+                logger.info("[%s] query=%r → %s", domain, query[:80], tool_fn.name)
                 raw_output = tool_fn.invoke(query)
 
                 # Parse tool output
@@ -171,7 +143,11 @@ class OracleFusionAgent:
                 data_rows = tool_data.get("data", [])
                 error_msg = tool_data.get("error")
 
+                logger.info("[%s] SQL: %s", domain, sql_used[:200] if sql_used else "none")
+                logger.info("[%s] rows=%d  chart=%s", domain, row_count, "yes" if chart_data else "no")
+
                 if error_msg:
+                    logger.warning("[%s] tool error: %s", domain, error_msg)
                     raise ValueError(error_msg)
 
                 # Format answer with a single LLM call
@@ -190,48 +166,12 @@ class OracleFusionAgent:
                 llm_response = self.llm.invoke(format_prompt)
                 answer = llm_response.content
 
-            # ── FULL PATH: cross-domain → use agent executor (needs tool selection) ──
-            else:
-                result = self.agent_executor.invoke(
-                    {
-                        "input": query,
-                        "chat_history": memory.chat_memory.messages,
-                    }
-                )
-
-                answer = result.get("output", "I could not generate a response.")
-
-                # Extract structured data from tool outputs
-                for step in result.get("intermediate_steps", []):
-                    if len(step) >= 2:
-                        tool_output = step[1]
-                        raw_str = None
-                        if isinstance(tool_output, str):
-                            raw_str = tool_output
-                        elif hasattr(tool_output, "content"):
-                            raw_str = tool_output.content
-                        elif hasattr(tool_output, "__str__"):
-                            raw_str = str(tool_output)
-
-                        if raw_str:
-                            try:
-                                tool_data = json.loads(raw_str)
-                                if tool_data.get("sql_used"):
-                                    sql_used = tool_data["sql_used"]
-                                if tool_data.get("chart_data"):
-                                    chart_data = tool_data["chart_data"]
-                                if tool_data.get("metrics"):
-                                    metrics = tool_data["metrics"]
-                                if "row_count" in tool_data:
-                                    row_count = tool_data["row_count"]
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-
             # Update memory
             memory.chat_memory.add_user_message(query)
             memory.chat_memory.add_ai_message(answer)
 
             execution_time = int((time.time() - start_time) * 1000)
+            logger.info("[%s] DONE in %dms | rows=%d", domain, execution_time, row_count)
 
             # Log to DB (fire-and-forget)
             try:
@@ -248,6 +188,7 @@ class OracleFusionAgent:
                 metrics=metrics,
                 execution_time_ms=execution_time,
                 row_count=row_count,
+                data=data_rows[:100] if data_rows else None,
             )
 
         except Exception as e:

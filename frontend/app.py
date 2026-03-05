@@ -4,6 +4,7 @@ import uuid
 import requests
 import streamlit as st
 import plotly.graph_objects as go
+import pandas as pd
 
 # ── Page config ──
 st.set_page_config(page_title="Oracle Fusion AI Agent", page_icon="🔮", layout="wide")
@@ -117,6 +118,43 @@ with st.sidebar:
 
     st.caption("Powered by Llama 3.3 70B (Groq) + PostgreSQL 15")
 
+# ── Smart table display logic ──
+_TABLE_KEYWORDS = {"table", "list", "show all", "details", "show data", "show records",
+                   "display data", "view data", "all records", "full data"}
+_TABULAR_HINTS = {"for each", "by department", "by supplier", "by cost centre", "per ",
+                  "breakdown", "department-wise", "side by side", "compare", "top 10",
+                  "top 5", "show me"}
+_AGGREGATION_ONLY = {"how many", "what is the total", "count of", "total number",
+                     "what is the average", "is there"}
+
+
+def _should_show_table(query: str, row_count: int, has_chart: bool) -> bool:
+    """Decide whether to show the data table based on query intent and data shape."""
+    q = query.lower()
+
+    # User explicitly asked for a table → always show
+    if any(kw in q for kw in _TABLE_KEYWORDS):
+        return True
+
+    # Simple aggregation with small result → answer text is enough
+    if any(kw in q for kw in _AGGREGATION_ONLY) and row_count <= 3:
+        return False
+
+    # Query implies tabular output → show
+    if any(kw in q for kw in _TABULAR_HINTS):
+        return True
+
+    # Many rows of data → show (likely a listing query)
+    if row_count >= 5:
+        return True
+
+    # Chart already shown and small data → chart is the visual, skip table
+    if has_chart and row_count <= 10:
+        return False
+
+    # Default: show for 3+ rows, hide for 1-2
+    return row_count >= 3
+
 
 # ── Chat history rendering ──
 for msg in st.session_state.messages:
@@ -172,6 +210,24 @@ for msg in st.session_state.messages:
                 except Exception:
                     pass
 
+            # Data table — only show when appropriate
+            data_rows = msg.get("data")
+            if data_rows and isinstance(data_rows, list) and len(data_rows) > 0:
+                user_query = ""
+                # Find the user message that triggered this response
+                msg_idx = st.session_state.messages.index(msg)
+                if msg_idx > 0:
+                    user_query = st.session_state.messages[msg_idx - 1].get("content", "").lower()
+
+                show_table = _should_show_table(user_query, len(data_rows), bool(msg.get("chart_data")))
+                if show_table:
+                    try:
+                        df_display = pd.DataFrame(data_rows)
+                        with st.expander(f"📊 View Data Table ({len(df_display)} rows)", expanded=True):
+                            st.dataframe(df_display, use_container_width=True, height=min(400, 35 * len(df_display) + 38))
+                    except Exception:
+                        pass
+
             # SQL expander
             sql_used = msg.get("sql_used", "")
             if sql_used:
@@ -216,6 +272,7 @@ if query:
                         "sql_used": data.get("sql_used", ""),
                         "chart_data": data.get("chart_data"),
                         "metrics": data.get("metrics"),
+                        "data": data.get("data"),
                         "execution_time_ms": data.get("execution_time_ms", 0),
                         "row_count": data.get("row_count", 0),
                     }

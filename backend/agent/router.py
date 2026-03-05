@@ -83,11 +83,15 @@ def classify_intent(query: str) -> dict:
     scores = {"HCM": hcm_score, "FINANCE": fin_score, "PROCUREMENT": proc_score}
     max_score = max(scores.values())
 
-    if max_score == 0:
+    # ── Cross-domain detection: 2+ domains each score >= 1 ──
+    active_domains = [d for d, s in scores.items() if s >= 1]
+    if len(active_domains) >= 2:
+        domain = "CROSS_DOMAIN"
+        confidence = 0.75
+    elif max_score == 0:
         domain = "CROSS_DOMAIN"
         confidence = 0.4
     else:
-        # Check if multiple domains scored equally high
         top_domains = [d for d, s in scores.items() if s == max_score]
         if len(top_domains) > 1:
             domain = "CROSS_DOMAIN"

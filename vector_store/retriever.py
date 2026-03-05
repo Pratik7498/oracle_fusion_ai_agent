@@ -50,29 +50,11 @@ def retrieve_schema_context(
     """
     settings = get_settings()
 
-    # Check if schema_embeddings has data
+    # Go straight to vector search — fallback to SCHEMA_DOCS on any error
     try:
         conn = _get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM schema_embeddings")
-        count = cursor.fetchone()[0]
     except Exception:
-        # If table doesn't exist or connection fails, use fallback
-        from vector_store.schema_docs import SCHEMA_DOCS
-        results = []
-        for doc in SCHEMA_DOCS:
-            if domain == "CROSS_DOMAIN" or doc["domain"] == domain or doc["domain"] == "ALL":
-                results.append({
-                    "title": doc["title"],
-                    "content": doc["content"],
-                    "domain": doc["domain"],
-                    "similarity": 1.0,
-                })
-        return results[:top_k]
-
-    # Fallback if no embeddings stored yet
-    if count == 0:
-        cursor.close()
         from vector_store.schema_docs import SCHEMA_DOCS
         results = []
         for doc in SCHEMA_DOCS:
@@ -92,13 +74,15 @@ def retrieve_schema_context(
     query_embedding = np.array(raw_embedding, dtype=np.float32)
 
     if domain == "CROSS_DOMAIN":
+        # Fetch more docs for cross-domain to cover multiple domains
+        cross_k = top_k + 3
         cursor.execute(
             """SELECT title, content, domain,
                       1 - (embedding <=> %s::vector) AS similarity
                FROM schema_embeddings
                ORDER BY embedding <=> %s::vector
                LIMIT %s""",
-            (query_embedding, query_embedding, top_k),
+            (query_embedding, query_embedding, cross_k),
         )
     else:
         cursor.execute(

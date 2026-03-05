@@ -11,6 +11,16 @@ from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+# ── Module-level cached Groq client (avoid re-creating per call) ──
+_groq_client = None
+
+def _get_groq_client() -> Groq:
+    global _groq_client
+    if _groq_client is None:
+        settings = get_settings()
+        _groq_client = Groq(api_key=settings.groq_api_key)
+    return _groq_client
+
 _BLOCKED_KEYWORDS = {
     "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE",
     "CREATE", "ALTER", "EXEC", "EXECUTE",
@@ -27,7 +37,21 @@ Rules you MUST follow:
 7. For fiscal quarters: Q1=JAN-MAR, Q2=APR-JUN, Q3=JUL-SEP, Q4=OCT-DEC
 8. Never put user values directly in SQL -- but for this POC, string interpolation is acceptable
 9. Return only the SQL query, starting with SELECT
-10. When query mentions 'budget' AND 'actual' together (budget vs actual, actual vs budget, percentage difference between actual and budget), ALWAYS use the finance_gl_balances view with balance_id as the primary key -- NEVER use fin_ap_invoices for budget queries (AP invoices have no budget_amount column). If user says 'invoice id' but asks about budget, treat it as balance_id in finance_gl_balances."""
+10. When query mentions 'budget' AND 'actual' together, ALWAYS use fin_gl_balances with balance_id as the primary key -- NEVER use fin_ap_invoices for budget queries.
+
+CRITICAL JOIN RULES -- these override any other assumptions:
+- hcm_persons does NOT have cost_centre_id or salary columns
+- Salary is in hcm_assignments.salary
+- fin_ap_payments has NO invoice_id and NO schedule_id -- it joins ONLY to sup_suppliers via supplier_id
+- fin_ap_payment_schedules has NO payment_id -- it joins ONLY to fin_ap_invoices via invoice_id
+- Always anchor department queries through fin_cost_centres (10 real cost centres) not directly from hcm_departments (4000+ seeded rows)
+
+CROSS-DOMAIN JOIN PATHS -- use these EXACTLY:
+- Headcount by dept: fin_cost_centres → hcm_departments (dept_id) → hcm_assignments (dept_id, WHERE assignment_status='ACTIVE') → COUNT(DISTINCT person_id)
+- Budget variance: fin_cost_centres → fin_gl_balances (cost_centre_id) → SUM(actual_amount - budget_amount)
+- PO spend by dept: fin_cost_centres → proc_po_distributions (cost_centre_id) → proc_po_lines (po_line_id) → proc_po_headers (po_header_id)
+- Requisition → PO → Invoice chain: proc_requisition_headers → proc_po_headers (requisition_id) → proc_po_lines (po_header_id) → fin_ap_invoice_lines (po_line_id)
+- Payment trail for supplier: sup_suppliers → proc_po_headers + fin_ap_invoices + fin_ap_payments (all via supplier_id)"""
 
 
 def validate_sql(sql: str) -> tuple[bool, str]:
@@ -81,10 +105,7 @@ def generate_sql(
     Uses Groq Llama 3.3 70B with schema context as few-shot examples.
     Validates output and retries once on failure.
     """
-    settings = get_settings()
-    # OpenAI version (commented out):
-    # client = OpenAI(api_key=settings.openai_api_key)
-    client = Groq(api_key=settings.groq_api_key)
+    client = _get_groq_client()
 
     context_text = "\n\nAvailable schema and examples:\n" + "\n\n".join(
         [f"=== {doc['title']} ===\n{doc['content']}" for doc in schema_context]
@@ -97,8 +118,11 @@ def generate_sql(
             f"Generate a corrected version.\n\n{query}"
         )
 
+    # Use 8b for single-domain (fast), 70b for cross-domain (accurate complex joins)
+    model = "llama-3.3-70b-versatile" if domain == "CROSS_DOMAIN" else "llama-3.1-8b-instant"
+
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",  # was "gpt-4o"
+        model=model,
         temperature=0,
         messages=[
             {"role": "system", "content": _SQL_SYSTEM_PROMPT + context_text},

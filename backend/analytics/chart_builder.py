@@ -5,11 +5,12 @@ import plotly.express as px
 import pandas as pd
 
 # ── Keywords that indicate the user wants a chart ──
+# Only include EXPLICIT visual requests — not analytical terms like 'breakdown', 'trend', 'distribution'
 _CHART_KEYWORDS = {
     "chart", "graph", "plot", "visualize", "visualise", "visual",
-    "diagram", "bar", "pie", "line chart", "trend", "breakdown",
-    "distribution", "histogram", "show chart", "display chart",
-    "draw", "compare visually",
+    "diagram", "pie chart", "bar chart", "line chart",
+    "histogram", "show chart", "display chart", "draw a chart",
+    "show me a graph", "show graph", "draw graph",
 }
 
 
@@ -160,6 +161,15 @@ def auto_chart(df: pd.DataFrame, query: str) -> dict | None:
     if df is None or df.empty or len(df) < 2:
         return None
 
+    # Convert Decimal/object columns to numeric where possible
+    # (PostgreSQL returns Decimal which pandas stores as dtype 'object')
+    for col in df.columns:
+        if df[col].dtype == "object":
+            try:
+                df[col] = pd.to_numeric(df[col])
+            except (ValueError, TypeError):
+                pass  # genuinely text — leave as-is
+
     query_lower = query.lower()
     cols = list(df.columns)
     n_cols = len(cols)
@@ -171,6 +181,38 @@ def auto_chart(df: pd.DataFrame, query: str) -> dict | None:
 
     if not numeric_cols:
         return None  # nothing to chart
+
+    # ── Handle all-numeric DataFrames (e.g. EXTRACT(MONTH) + SUM(amount)) ──
+    # Treat first numeric column as label/axis if no text columns exist
+    if not text_cols and len(numeric_cols) >= 2:
+        # Promote first numeric column to label column
+        label_col = numeric_cols[0]
+        text_cols = [label_col]
+        numeric_cols = numeric_cols[1:]
+        # Convert the label column to string for display
+        df[label_col] = df[label_col].astype(int).astype(str)
+
+    # ── Force line chart when user explicitly requests one ──
+    if "line chart" in query_lower and len(text_cols) >= 1 and len(numeric_cols) >= 1:
+        label_col = text_cols[0]
+        value_col = numeric_cols[0]
+        labels = df[label_col].astype(str).tolist()
+        values = df[value_col].tolist()
+        title = f"{value_col.replace('_', ' ').title()} by {label_col.replace('_', ' ').title()}"
+        fig = go.Figure(
+            data=[go.Scatter(
+                x=labels, y=values,
+                mode="lines+markers",
+                line=dict(color="#3B82F6", width=2),
+                marker=dict(size=8, color="#22C55E"),
+                fill="tozeroy",
+                fillcolor="rgba(59, 130, 246, 0.1)",
+            )]
+        )
+        fig = _apply_defaults(fig, title)
+        fig.update_xaxes(title_text=label_col.replace("_", " ").title())
+        fig.update_yaxes(title_text=value_col.replace("_", " ").title())
+        return fig.to_dict()
 
     # ── Heuristic 1: Category + single numeric = bar chart ──
     if len(text_cols) >= 1 and len(numeric_cols) >= 1:

@@ -12,6 +12,10 @@ from pydantic import BaseModel
 from backend.agent.orchestrator import OracleFusionAgent
 from backend.db.connection import execute_query
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:     %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -47,6 +51,7 @@ class ChatResponse(BaseModel):
     execution_time_ms: int
     session_id: str
     row_count: int
+    data: Optional[list] = None
     error: Optional[str] = None
 
 
@@ -65,6 +70,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         execution_time_ms=response.execution_time_ms,
         session_id=session_id,
         row_count=response.row_count,
+        data=response.data,
         error=response.error,
     )
 
@@ -93,7 +99,7 @@ async def sample_queries() -> dict:
         suppliers = execute_query("SELECT supplier_name FROM sup_suppliers ORDER BY RANDOM() LIMIT 10")
         sup_names = suppliers["supplier_name"].tolist() if not suppliers.empty else ["Acme Ltd"]
 
-        grades = execute_query("SELECT DISTINCT grade_code FROM hcm_grades ORDER BY RANDOM() LIMIT 5")
+        grades = execute_query("SELECT grade_code FROM (SELECT DISTINCT grade_code FROM hcm_grades) t ORDER BY RANDOM() LIMIT 5")
         grade_codes = grades["grade_code"].tolist() if not grades.empty else ["G5"]
 
         cc = execute_query("SELECT cost_centre_name FROM fin_cost_centres ORDER BY RANDOM() LIMIT 5")
@@ -102,7 +108,7 @@ async def sample_queries() -> dict:
         customers = execute_query("SELECT customer_name FROM fin_ar_customers ORDER BY RANDOM() LIMIT 5")
         cust_names = customers["customer_name"].tolist() if not customers.empty else ["Corp A"]
 
-        categories = execute_query("SELECT DISTINCT category FROM proc_po_headers WHERE category IS NOT NULL ORDER BY RANDOM() LIMIT 5")
+        categories = execute_query("SELECT category FROM (SELECT DISTINCT category FROM proc_po_headers WHERE category IS NOT NULL) t ORDER BY RANDOM() LIMIT 5")
         cat_names = categories["category"].tolist() if not categories.empty else ["IT"]
 
         # ── Build HCM queries ──
