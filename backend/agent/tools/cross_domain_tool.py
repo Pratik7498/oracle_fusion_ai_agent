@@ -10,6 +10,8 @@ from vector_store.retriever import retrieve_schema_context
 from backend.agent.sql_generator import generate_sql
 from backend.db.connection import execute_query
 from backend.analytics.chart_builder import auto_chart, wants_chart
+from backend.query_planner import build_query_plan
+from backend.agent.sql_sanitizer import validate_and_fix_sql
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +67,22 @@ def cross_domain_query_tool(query: str) -> str:
         for doc in combined_ctx:
             logger.debug("[CROSS_DOMAIN]   → %s", doc["title"])
 
+        # Build cross-domain query plan for schema-accurate table/column guidance
+        query_plan = build_query_plan(query, domain="CROSS_DOMAIN")
+        logger.debug("[CROSS_DOMAIN] query plan: metric=%s cross=%s cte_domains=%s",
+                     query_plan.get("metric"), query_plan.get("is_cross_domain"),
+                     query_plan.get("cte_domains"))
+
         # Generate SQL with enriched cross-domain context
-        sql = generate_sql(query, combined_ctx, "CROSS_DOMAIN")
-        logger.info("[CROSS_DOMAIN] generated SQL: %s", sql[:300])
+        raw_sql = generate_sql(query, combined_ctx, "CROSS_DOMAIN", query_plan=query_plan)
+        logger.info("[CROSS_DOMAIN] raw generated SQL: %s", raw_sql[:300])
+
+        # Dynamic validation: sanitise → EXPLAIN validate → LLM self-correct
+        sql, corrections = validate_and_fix_sql(
+            raw_sql, query, combined_ctx, "CROSS_DOMAIN", query_plan=query_plan
+        )
+        if corrections:
+            logger.info("[CROSS_DOMAIN] corrections applied: %s", corrections)
 
         df = execute_query(sql)
         logger.info("[CROSS_DOMAIN] executed → %d rows", len(df))
@@ -77,7 +92,8 @@ def cross_domain_query_tool(query: str) -> str:
             return json.dumps({
                 "data": [],
                 "sql_used": sql,
-                "message": "No data found for this cross-domain query.",
+                "sql_corrections": corrections,
+                "message": "No records were found in the database for this query.",
                 "row_count": 0,
             })
 

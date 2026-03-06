@@ -188,7 +188,7 @@ class OracleFusionAgent:
                 metrics=metrics,
                 execution_time_ms=execution_time,
                 row_count=row_count,
-                data=data_rows[:100] if data_rows else None,
+                data=data_rows[:] if data_rows else None,
             )
 
         except Exception as e:

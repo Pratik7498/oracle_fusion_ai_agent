@@ -11,6 +11,8 @@ from backend.agent.sql_generator import generate_sql
 from backend.db.connection import execute_query
 from backend.analytics.calculations import calculate_budget_variance, calculate_ap_aging
 from backend.analytics.chart_builder import build_variance_chart, build_aging_chart, auto_chart, wants_chart
+from backend.query_planner import build_query_plan
+from backend.agent.sql_sanitizer import validate_and_fix_sql
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +25,22 @@ def finance_query_tool(query: str) -> str:
 
     try:
         schema_context = retrieve_schema_context(query, "FINANCE", top_k=3)
-        sql = generate_sql(query, schema_context, "FINANCE")
+        query_plan = build_query_plan(query, domain="FINANCE")
+        raw_sql = generate_sql(query, schema_context, "FINANCE", query_plan=query_plan)
+
+        # Dynamic 3-layer validation: sanitise → EXPLAIN validate → LLM self-correct
+        sql, corrections = validate_and_fix_sql(
+            raw_sql, query, schema_context, "FINANCE", query_plan=query_plan
+        )
+
         df = execute_query(sql)
 
         if df.empty:
-            return json.dumps(
-                {"data": [], "sql_used": sql, "message": "No data found for this query."}
-            )
+            return json.dumps({
+                "data": [], "sql_used": sql, "row_count": 0,
+                "sql_corrections": corrections,
+                "message": "No records were found in the database for this query.",
+            })
 
         query_lower = query.lower()
         metrics: dict = {}

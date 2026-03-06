@@ -1,5 +1,6 @@
 """Plotly chart builders — all return fig.to_dict() for JSON serialisation."""
 
+import re
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
@@ -153,6 +154,52 @@ def build_aging_chart(aging_data: dict, title: str) -> dict:
     return fig.to_dict()
 
 
+def _extract_parent_dept(name: str) -> str:
+    """Extract the parent department prefix from a sub-department name.
+
+    E.g. 'Analytics 1012' -> 'Analytics',  'Legal 2361' -> 'Legal',
+         'HR-Benefits 102' -> 'HR-Benefits',  'Finance' -> 'Finance'
+    """
+    # Strip trailing numeric codes (space + digits at end)
+    parent = re.sub(r'\s+\d+$', '', name.strip())
+    return parent if parent else name.strip()
+
+
+def _aggregate_by_parent_dept(
+    df: pd.DataFrame, label_col: str, numeric_cols: list[str], top_n: int = 30
+) -> pd.DataFrame:
+    """Collapse sub-department rows into parent departments by summing numerics.
+
+    Only activates when the label column has > 30 unique values AND at least
+    some labels look like '<Word> <number>' sub-department codes.
+    Returns a DataFrame sorted by the absolute value of the first numeric col,
+    capped at top_n rows.
+    """
+    unique_labels = df[label_col].astype(str).unique()
+    n_unique = len(unique_labels)
+
+    # Detect sub-department pattern: many rows AND trailing digits present
+    has_subcode = any(re.search(r'\s+\d+$', lbl) for lbl in unique_labels[:50])
+
+    if n_unique > 30 and has_subcode:
+        # Build parent column and aggregate
+        df = df.copy()
+        df["_parent"] = df[label_col].astype(str).map(_extract_parent_dept)
+        agg_dict = {nc: "sum" for nc in numeric_cols if nc in df.columns}
+        df = df.groupby("_parent", as_index=False).agg(agg_dict)
+        df = df.rename(columns={"_parent": label_col})
+
+    # Sort by absolute value of first numeric metric descending, cap at top_n
+    if numeric_cols and numeric_cols[0] in df.columns:
+        df = df.reindex(
+            df[numeric_cols[0]].abs().sort_values(ascending=False).index
+        ).head(top_n)
+    else:
+        df = df.head(top_n)
+
+    return df.reset_index(drop=True)
+
+
 def auto_chart(df: pd.DataFrame, query: str) -> dict | None:
     """Smart auto-chart: pick the best chart type based on DataFrame shape and query.
 
@@ -194,8 +241,21 @@ def auto_chart(df: pd.DataFrame, query: str) -> dict | None:
 
     # ── Force line chart when user explicitly requests one ──
     if "line chart" in query_lower and len(text_cols) >= 1 and len(numeric_cols) >= 1:
-        label_col = text_cols[0]
-        value_col = numeric_cols[0]
+        # Prefer a display-label text column (e.g. 'month_label', 'period_name')
+        # over a raw ordinal col name when multiple text cols exist.
+        _label_priority = ["label", "name", "period", "month", "date", "quarter", "year"]
+        label_col = next(
+            (c for c in text_cols if any(p in c.lower() for p in _label_priority)),
+            text_cols[0],
+        )
+
+        # Skip ordinal/sort-key numerics (invoice_month, quarter_num etc. max ≤ 366).
+        # Pick the first column whose max value looks like a real metric (> 366).
+        value_col = next(
+            (nc for nc in numeric_cols if df[nc].max() > 366),
+            numeric_cols[-1],  # fallback: last numeric col
+        )
+
         labels = df[label_col].astype(str).tolist()
         values = df[value_col].tolist()
         title = f"{value_col.replace('_', ' ').title()} by {label_col.replace('_', ' ').title()}"
@@ -219,15 +279,21 @@ def auto_chart(df: pd.DataFrame, query: str) -> dict | None:
         label_col = text_cols[0]
         value_col = numeric_cols[0]
 
-        labels = df[label_col].astype(str).tolist()[:20]  # cap at 20
-        values = df[value_col].tolist()[:20]
+        # ── Aggregate sub-departments into parent departments when needed ──
+        # This handles queries like "department-wise breakdown" where the SQL
+        # returns one row per sub-department (e.g. 'Analytics 1012') but the
+        # user wants aggregated totals per top-level department.
+        plot_df = _aggregate_by_parent_dept(df, label_col, numeric_cols, top_n=30)
+
+        labels = plot_df[label_col].astype(str).tolist()
+        values = plot_df[value_col].tolist()
 
         # Pick chart title from column names
         title = f"{value_col.replace('_', ' ').title()} by {label_col.replace('_', ' ').title()}"
 
-        # Check if pie chart makes sense (proportion/distribution, small categories, query mentions distribution/breakdown)
+        # Check if pie chart makes sense (proportion/distribution, small categories)
         use_pie = (
-            n_rows <= 10
+            len(labels) <= 10
             and all(v >= 0 for v in values if v is not None)
             and any(w in query_lower for w in ["distribution", "breakdown", "proportion", "split", "share", "pie"])
         )
@@ -251,10 +317,11 @@ def auto_chart(df: pd.DataFrame, query: str) -> dict | None:
             fig = go.Figure()
             bar_colors = ["#3B82F6", "#22C55E", "#F59E0B", "#EF4444", "#8B5CF6"]
             for i, nc in enumerate(numeric_cols[:4]):
+                col_values = plot_df[nc].tolist() if nc in plot_df.columns else []
                 fig.add_trace(go.Bar(
                     name=nc.replace("_", " ").title(),
                     x=labels,
-                    y=df[nc].tolist()[:20],
+                    y=col_values,
                     marker_color=bar_colors[i % len(bar_colors)],
                 ))
             fig = _apply_defaults(fig, title)

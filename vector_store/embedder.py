@@ -39,14 +39,6 @@ def embed_all_schema_docs() -> None:
     cursor = conn.cursor()
 
     for doc in SCHEMA_DOCS:
-        # Check if already exists
-        cursor.execute(
-            "SELECT 1 FROM schema_embeddings WHERE doc_id = %s", (doc["doc_id"],)
-        )
-        if cursor.fetchone():
-            print(f"  Skipping {doc['doc_id']} -- already embedded")
-            continue
-
         print(f"  Embedding: {doc['title']}")
         try:
             embedding = get_embedding(doc["content"], embeddings_model)
@@ -58,7 +50,11 @@ def embed_all_schema_docs() -> None:
         cursor.execute(
             """INSERT INTO schema_embeddings (doc_id, domain, title, content, embedding)
                VALUES (%s, %s, %s, %s, %s)
-               ON CONFLICT (doc_id) DO NOTHING""",
+               ON CONFLICT (doc_id) DO UPDATE SET
+                   domain = EXCLUDED.domain,
+                   title = EXCLUDED.title,
+                   content = EXCLUDED.content,
+                   embedding = EXCLUDED.embedding""",
             (
                 doc["doc_id"],
                 doc["domain"],

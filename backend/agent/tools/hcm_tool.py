@@ -15,6 +15,8 @@ from backend.analytics.calculations import (
     calculate_headcount_summary,
 )
 from backend.analytics.chart_builder import build_bar_chart, auto_chart, wants_chart
+from backend.query_planner import build_query_plan
+from backend.agent.sql_sanitizer import validate_and_fix_sql
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +31,25 @@ def hcm_query_tool(query: str) -> str:
         # 1. Get schema context
         schema_context = retrieve_schema_context(query, "HCM", top_k=3)
 
-        # 2. Generate SQL
-        sql = generate_sql(query, schema_context, "HCM")
+        # 2. Build query plan for accurate table/column guidance
+        query_plan = build_query_plan(query, domain="HCM")
 
-        # 3. Execute query
+        # 3. Generate SQL
+        raw_sql = generate_sql(query, schema_context, "HCM", query_plan=query_plan)
+
+        # 4. Dynamic validation: sanitise → EXPLAIN validate → LLM self-correct
+        sql, corrections = validate_and_fix_sql(
+            raw_sql, query, schema_context, "HCM", query_plan=query_plan
+        )
+
+        # 5. Execute query
         df = execute_query(sql)
 
         if df.empty:
-            return json.dumps(
-                {"data": [], "sql_used": sql, "message": "No data found for this query."}
-            )
+            return json.dumps({
+                "data": [], "sql_used": sql, "row_count": 0,
+                "message": "No records were found in the database for this query.",
+            })
 
         # 4. Detect if calculation needed
         query_lower = query.lower()
