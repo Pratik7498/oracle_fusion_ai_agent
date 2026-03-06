@@ -1,22 +1,59 @@
-# Virtual environments
+# ── Virtual environments ─────────────────────────────────────────
 .venv/
 .venv311/
+venv/
+env/
 
-# Environment secrets
+# ── Secrets & local config ───────────────────────────────────────
 .env
+.env.local
+*.key
 
-# Python
+# ── Python ───────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
 *.egg-info/
 dist/
 build/
+*.so
 
-# IDE
+# ── Test & coverage artefacts ────────────────────────────────────
+.pytest_cache/
+.benchmarks/
+htmlcov/
+.coverage
+*.coverage
+test_output.txt
+test_results.json
+validation_output*.txt
+
+# ── Generated / temp output files ────────────────────────────────
+# (debug scripts, one-off dumps — delete these, don't commit them)
+debug_*.py
+tmp_*.py
+quick_check.py
+*_out.txt
+*_out_utf8.txt
+*.dump
+db_gl_dump.json
+
+# ── IDE ───────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
+*.swo
 
-# OS
+# ── OS ────────────────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
+desktop.ini
+
+# ── Vector store indices (large, regenerated on startup) ─────────
+vector_store/chroma/
+vector_store/*.bin
+vector_store/*.index
+
+# ── Large generated documentation (regenerate with extract_db_analysis.py) ──
+# Uncomment next line if you don't want to commit the 247KB analysis file:
+# database_analysis.md
